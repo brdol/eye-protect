@@ -59,26 +59,20 @@ python eye_protect.py                         # 首次运行会自动生成默�
 python eye_protect.py
 ```
 
-### 开机自启动（二选一）
-
-| 方式 | 命令 | 权限 | 运行形态 |
-|---|---|---|---|
-| **后台（服务）** | `python install_service.py` 或 `install_service.bat` | 需管理员 | `pythonw.exe`，无控制台窗口，登录时自动启动 |
-| **前台（可见）** | `python install_service_simple.py` | 无需管理员 | `python.exe`，可见控制台窗口 |
-
-- 后台方式用任务计划程序（`schtasks /SC ONLOGON /RL LIMITED`，**最低权限**），登录时拉起 `pythonw.exe`。
-- 前台方式把启动脚本放进启动文件夹，登录时拉起 `python.exe`。
-- 两种方式都会用**当前解释器 + 脚本绝对路径**重新生成启动配置，换机器重装即可。
+### 开机自启动（无需管理员，后台运行）
+```bash
+python install_service.py
+```
+在用户启动文件夹创建指向 `pythonw.exe` 的快捷方式（`.lnk`），登录时后台启动，**无终端窗口，全程零管理员**。安装脚本会顺带清理旧方式残留。
 
 ### 卸载自启动
 ```bash
-python uninstall_service.py          # 后台方式
-python uninstall_service_simple.py  # 前台方式
+python uninstall_service.py
 ```
 
 ### 停止运行中的程序
-- 前台方式：在控制台按 `Ctrl+C`。
-- 后台方式：任务管理器结束 `pythonw.exe`（命令行含 `eye_protect.py`）。
+- 任务管理器结束 `pythonw.exe`（命令行含 `eye_protect.py`）。
+- 想要前台可见控制台调试，直接 `python eye_protect.py` 运行即可（与自启动互不影响）。
 
 ## 日志
 

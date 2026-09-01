@@ -1,49 +1,61 @@
-"""卸载护眼软件自动启动任务"""
+"""卸载护眼软件开机自启动（删除启动文件夹快捷方式；并清理旧方式残留）"""
+import os
 import subprocess
 import sys
 
+TASK_NAME = "EyeProtector"
 
-def uninstall_task_scheduler():
-    """从Windows任务计划程序中删除自动启动任务"""
 
-    task_name = "EyeProtector"
+def get_startup_folder():
+    return os.path.join(os.environ["APPDATA"],
+                        "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
-    print(f"正在卸载护眼软件自动启动任务...")
+
+def uninstall():
+    startup_folder = get_startup_folder()
+    print("正在卸载护眼软件开机自启动...")
     print()
+    removed = False
 
-    # 删除任务
-    cmd = f'schtasks /Delete /TN "{task_name}" /F'
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    # 1) 删除快捷方式（当前方式）
+    lnk = os.path.join(startup_folder, "EyeProtect.lnk")
+    if os.path.exists(lnk):
+        try:
+            os.remove(lnk)
+            print(f"[OK] 已删除快捷方式: {lnk}")
+            removed = True
+        except Exception as e:
+            print(f"[FAIL] 删除快捷方式失败: {e}")
 
-    if result.returncode == 0:
-        print("[OK] 卸载成功！")
-        print(f"\n任务 '{task_name}' 已从任务计划程序中删除。")
-        print("护眼软件将不再自动启动。")
+    # 2) 清理旧方式残留
+    old_bat = os.path.join(startup_folder, "EyeProtector.bat")
+    if os.path.exists(old_bat):
+        try:
+            os.remove(old_bat)
+            print(f"[OK] 已清理旧启动脚本: {old_bat}")
+            removed = True
+        except Exception as e:
+            print(f"[FAIL] 删除旧脚本失败: {e}")
+
+    q = subprocess.run(f'schtasks /Query /TN "{TASK_NAME}"',
+                       shell=True, capture_output=True, text=True)
+    if q.returncode == 0:
+        subprocess.run(f'schtasks /Delete /TN "{TASK_NAME}" /F',
+                       shell=True, capture_output=True, text=True)
+        print(f"[OK] 已清理旧任务计划程序任务: {TASK_NAME}")
+        removed = True
+
+    if not removed:
+        print("未发现自启动项（可能已卸载）。")
     else:
-        if "找不到" in result.stderr or "cannot find" in result.stderr.lower():
-            print("任务不存在，无需卸载。")
-        else:
-            print("[FAIL] 卸载失败！")
-            print(f"错误信息: {result.stderr}")
-            return False
-
+        print()
+        print("护眼软件将不再开机自启动。")
     return True
 
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("护眼软件 - 自动启动卸载程序")
+    print("护眼软件 - 开机自启动卸载程序")
     print("=" * 60)
     print()
-
-    response = input("确定要卸载自动启动任务吗? (y/n): ")
-    if response.lower() != 'y':
-        print("卸载已取消")
-        sys.exit(0)
-
-    print()
-    if uninstall_task_scheduler():
-        print()
-        print("卸载完成！")
-    else:
-        sys.exit(1)
+    uninstall()

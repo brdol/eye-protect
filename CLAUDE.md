@@ -33,9 +33,9 @@ python test_service.py        # install/start/process/uninstall verification
 
 `test_logic.py` is config-agnostic: it verifies loading by comparing the instance against `config.json`'s actual values, so it passes with any valid config. `test_prompt.py` stubs `lock_screen` and exercises the state machine with `prompt_hwnd=None` (no real window). `test_edge_cases.py` and `test_integration.py` back up `config.json` to `config.json.backup` and restore it in a `finally` block — they mutate config during the run, so don't run them concurrently. `test_service.py`, `test_exit.py`, and `test_ctrl_c.py` actually launch `eye_protect.py` (and `test_service.py` touches the Startup folder) — heavier, and can leave a background process that will lock the screen after `work_duration` minutes; run them deliberately and kill the process afterward.
 
-### Auto-start install / uninstall (two parallel implementations)
-- **Simple / foreground (Startup folder, no admin):** `python install_service_simple.py` / `python uninstall_service_simple.py` — runs `python.exe` with a **visible console** window (foreground).
-- **Service / background (Task Scheduler, needs admin):** `python install_service.py` (or `install_service.bat`) / `python uninstall_service.py` — runs `pythonw.exe` (no console window, background, service-like), `/RL LIMITED`, fires on logon.
+### Auto-start install / uninstall (no admin, background)
+- **Install:** `python install_service.py` — creates a `.lnk` shortcut to `pythonw.exe` in the user Startup folder. Fires on login, runs `pythonw.exe` (no console window, background). **No admin needed.**
+- **Uninstall:** `python uninstall_service.py` — deletes the shortcut (and cleans up legacy `EyeProtector.bat` / Task Scheduler task).
 
 ### Package as exe (optional)
 ```bash
@@ -75,17 +75,16 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 - `config.json` keys (with per-key code defaults): `work_duration_minutes` (20), `min_rest_duration_seconds` (20), `log_dir` ("logs"), `lock_mode` ("prompt" | "hard"), `grace_seconds` (60), `postpone_minutes` (5), `max_postpones` (3), `prompt_window_width` (360, px), `prompt_window_height` (160, px), `prompt_font_size` (9, points), `prompt_position` ("top-right" | "center" | "top-left" | "bottom-left" | "bottom-right" | "top-center"). A missing config file writes the defaults; missing keys fall back per-key. `lock_mode`/`prompt_position` are case-insensitive (unknown→default); `grace_seconds`/`postpone_minutes` clamp to ≥1, `max_postpones` to ≥0, font ≥4, window width ≥300/height ≥160. The reader uses `utf-8-sig`, so a UTF-8 BOM is tolerated.
 - Logs to `logs/eye_protect_YYYYMMDD.log` plus **stderr** (`StreamHandler` default), via `logging.basicConfig` at INFO. WARNING-level transitions (timeout, postpone, grace expiry, lock/unlock) are the primary audit trail.
 
-### Auto-start installers
-- `install_service_simple.py` — generates `eye_protect_startup.bat` (foreground: `python.exe`, visible console) with the current interpreter + script paths, copies it to `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\EyeProtector.bat`. No admin needed.
-- `install_service.py` — `schtasks /Create /SC ONLOGON /RL LIMITED` for task `EyeProtector`, running `pythonw.exe` (background, no console window). Needs admin.
-- Each has a matching `uninstall_service_*.py`.
+### Auto-start installer
+- `install_service.py` — creates a `.lnk` shortcut (via pywin32 `win32com.client` → `WScript.Shell.CreateShortcut`) in `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\EyeProtect.lnk`, pointing to `pythonw.exe` + `eye_protect.py`. Runs on login, background, **no admin**. Also cleans up legacy install methods (`EyeProtector.bat`, the old Task Scheduler task).
+- `uninstall_service.py` — deletes the `.lnk` (+ legacy cleanup).
 
 ## Gotchas
 
-- **Git repo on GitHub (private):** tracked in git and pushed to GitHub. `origin` is HTTPS (the office network blocks SSH port 22; git credentials via `gh auth setup-git`). `config.json`, `eye_protect_startup.bat`, `logs/`, `__pycache__/`, `.idea/`, `.claude/settings.local.json` are gitignored (machine-specific / generated).
+- **Git repo on GitHub (private):** tracked in git and pushed to GitHub. `origin` is HTTPS (the office network blocks SSH port 22; git credentials via `gh auth setup-git`). `config.json`, `logs/`, `__pycache__/`, `.idea/`, `.claude/settings.local.json` are gitignored (machine-specific / generated). The auto-start `.lnk` lives in the Startup folder (outside the repo).
 - **Interpreter not on PATH:** the dev machine's `python` is a Microsoft Store stub. Use `D:\dev\miniconda\python.exe`; `pywin32` lives in its user site-packages.
 - **The startup bat is machine-specific.** `eye_protect_startup.bat` bakes absolute interpreter + project paths (currently `D:\dev\miniconda\python.exe` and `D:\proj\eye-protect`) — a bat copied to the Windows Startup folder must point back to the project by absolute path. `install_service_simple.py` regenerates it from `sys.executable`/`__file__`, so re-run that on a new machine rather than copying the bat. `test_service.py` resolves paths dynamically via `__file__`.
 - **The prompt window can't be unit-tested directly** — it needs the live `PumpWaitingMessages` loop + a real window. `test_prompt.py` covers the state logic by stubbing `lock_screen` and driving the state methods with `prompt_hwnd=None`; the window mechanics (class registration, GC pinning, `SetTimer`/`KillTimer`) are only exercised by a manual end-to-end run (short config: `work_duration 1 / grace 15 / postpone 1 / max_postpones 2`).
 - **Config/log paths are script-relative, not CWD-relative.** `eye_protect.py` locates `config.json` and `logs/` via `SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))`, NOT the process working directory. This matters because the Task Scheduler method runs with CWD = `C:\Windows\System32` (no "Start In" set) — a relative path would look in System32, fail to write (LIMITED), and crash silently before logging. Keep these paths script-relative.
-- Stopping the running protector: for the foreground (Simple) mode, Ctrl+C in its console; for the background (Task Scheduler) mode, end the `pythonw.exe` process (Task Manager → command line contains `eye_protect.py`).
+- Stopping the running protector: the auto-start runs `pythonw.exe` (no console) — end it via Task Manager (`pythonw.exe`, command line contains `eye_protect.py`); for a manual foreground run, Ctrl+C in its console.
 - Logs accumulate under `logs/` (gitignored, machine-specific).
