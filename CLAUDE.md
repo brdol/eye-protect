@@ -82,10 +82,10 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 
 ## Gotchas
 
-- **Not a git repository** — there is no version-control history to consult.
+- **Git repo on GitHub (private):** tracked in git and pushed to GitHub. `origin` is HTTPS (the office network blocks SSH port 22; git credentials via `gh auth setup-git`). `config.json`, `eye_protect_startup.bat`, `logs/`, `__pycache__/`, `.idea/`, `.claude/settings.local.json` are gitignored (machine-specific / generated).
 - **Interpreter not on PATH:** the dev machine's `python` is a Microsoft Store stub. Use `D:\dev\miniconda\python.exe`; `pywin32` lives in its user site-packages.
 - **The startup bat is machine-specific.** `eye_protect_startup.bat` bakes absolute interpreter + project paths (currently `D:\dev\miniconda\python.exe` and `D:\proj\eye-protect`) — a bat copied to the Windows Startup folder must point back to the project by absolute path. `install_service_simple.py` regenerates it from `sys.executable`/`__file__`, so re-run that on a new machine rather than copying the bat. `test_service.py` resolves paths dynamically via `__file__`.
 - **The prompt window can't be unit-tested directly** — it needs the live `PumpWaitingMessages` loop + a real window. `test_prompt.py` covers the state logic by stubbing `lock_screen` and driving the state methods with `prompt_hwnd=None`; the window mechanics (class registration, GC pinning, `SetTimer`/`KillTimer`) are only exercised by a manual end-to-end run (short config: `work_duration 1 / grace 15 / postpone 1 / max_postpones 2`).
 - **Config/log paths are script-relative, not CWD-relative.** `eye_protect.py` locates `config.json` and `logs/` via `SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))`, NOT the process working directory. This matters because the Task Scheduler method runs with CWD = `C:\Windows\System32` (no "Start In" set) — a relative path would look in System32, fail to write (LIMITED), and crash silently before logging. Keep these paths script-relative.
-- Stopping the running protector: Ctrl+C in its terminal, or end the `python.exe` process whose command line contains `eye_protect.py`.
-- Logs accumulate under `logs/` — not versioned since this isn't a git repo.
+- Stopping the running protector: for the foreground (Simple) mode, Ctrl+C in its console; for the background (Task Scheduler) mode, end the `pythonw.exe` process (Task Manager → command line contains `eye_protect.py`).
+- Logs accumulate under `logs/` (gitignored, machine-specific).
