@@ -2,6 +2,8 @@ import ctypes
 import json
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -62,6 +64,8 @@ class EyeProtector:
         self._prompt_atom = None
         self._prompt_font = None
         self._gdi_setup = False
+        self._heartbeat = time.time()
+        self._exiting = False
 
     def _set_dpi_aware(self):
         """声明进程 DPI 感知，避免系统整体放大导致窗口/字体偏大。必须在创建窗口前调用。"""
@@ -338,11 +342,14 @@ class EyeProtector:
             win32api.PostMessage(self.hwnd, WM_APP_GRACE_EXPIRED, 0, 0)
 
     def on_grace_timeout(self):
-        """主线程收到宽限期满消息：清理提示并进入休息。"""
+        """主线程收到宽限期满消息：清理提示并进入休息。
+        锁屏已由 on_grace_expired 在工作线程执行，此处不再重复调用 LockWorkStation
+        （两次叠加在某些会话/电源态下会阻塞主线程，导致后续收不到 WTS 事件）。"""
         if not self.prompt_active:
             return
         self._teardown_prompt()
-        self.enter_rest()
+        self.is_resting = True
+        self.logger.info("宽限超时，进入休息")
 
     def prompt_wnd_proc(self, hwnd, msg, wparam, lparam):
         """提示窗口过程（主线程）。"""
@@ -441,6 +448,21 @@ class EyeProtector:
         if self.hwnd:
             win32gui.PostMessage(self.hwnd, win32con.WM_QUIT, 0, 0)
 
+    def _watchdog(self):
+        """看门狗：主线程若长时间不泵消息(卡死)则重启进程自愈。"""
+        while self.running and not self._exiting:
+            time.sleep(60)
+            if self._exiting or not self.running:
+                return
+            stale = time.time() - self._heartbeat
+            if stale > 180:
+                self.logger.error(f"watchdog: 主线程无响应({stale:.0f}s)，重启进程自愈")
+                try:
+                    subprocess.Popen([sys.executable, os.path.join(SCRIPT_DIR, "eye_protect.py")])
+                except Exception as e:
+                    self.logger.error(f"watchdog: 重启失败: {e}")
+                os._exit(2)
+
     def run(self):
         """主循环"""
         # 初始状态：假设刚启动时是解锁状态
@@ -464,9 +486,13 @@ class EyeProtector:
         # 注册会话通知
         win32ts.WTSRegisterSessionNotification(self.hwnd, win32ts.NOTIFY_FOR_THIS_SESSION)
 
+        # 看门狗：主线程若卡死则重启进程自愈
+        threading.Thread(target=self._watchdog, daemon=True).start()
+
         # 非阻塞消息循环
         try:
             while self.running:
+                self._heartbeat = time.time()
                 # 处理所有待处理的消息
                 if win32gui.PumpWaitingMessages():
                     break
@@ -475,6 +501,7 @@ class EyeProtector:
         except KeyboardInterrupt:
             pass
 
+        self._exiting = True
         self.logger.info("程序已退出")
 
     def wnd_proc(self, hwnd, msg, wparam, lparam):
