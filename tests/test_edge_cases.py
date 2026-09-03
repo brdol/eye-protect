@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import sys
+from _bootstrap import *
 from eye_protect import EyeProtector
 
 
@@ -53,7 +54,8 @@ def test_config_validation():
         protector = EyeProtector()
         assert protector.work_duration == 10, "应该读取工作时长"
         assert protector.min_rest_duration == 30, "应该读取休息时长"
-        assert protector.log_dir == "test_logs", "应该读取日志目录"
+        # log_dir 相对路径会被解析为脚本目录下的绝对路径
+        assert protector.log_dir.endswith("test_logs"), f"应该读取日志目录，实际 {protector.log_dir}"
         print("  [OK] 完整配置正确加载")
 
         # 测试4: 零/负值被钳制

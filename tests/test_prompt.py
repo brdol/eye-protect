@@ -6,6 +6,7 @@
 import sys
 import time
 
+from _bootstrap import *
 from eye_protect import EyeProtector, WM_APP_PROMPT, WM_APP_HARD_LOCK
 
 

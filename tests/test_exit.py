@@ -1,10 +1,13 @@
 import subprocess
 import time
 import signal
+import sys
+from _bootstrap import *
 
 print("启动护眼程序...")
 proc = subprocess.Popen(
-    ["python", "eye_protect.py"],
+    [sys.executable, os.path.join(PROJECT_ROOT, "eye_protect.py")],
+    cwd=PROJECT_ROOT,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,

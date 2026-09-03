@@ -3,6 +3,7 @@ import json
 import sys
 import time
 import threading
+from _bootstrap import *
 from eye_protect import EyeProtector
 
 

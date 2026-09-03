@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 from datetime import datetime
+from _bootstrap import *
 from eye_protect import EyeProtector
 
 

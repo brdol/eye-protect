@@ -1,6 +1,7 @@
 """测试 Ctrl+C 是否能正常工作"""
 import time
 import win32gui
+from _bootstrap import *
 
 print("程序启动，按 Ctrl+C 退出...")
 print("等待5秒后自动退出（或按 Ctrl+C 提前退出）")

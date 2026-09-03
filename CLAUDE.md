@@ -22,6 +22,7 @@ Run elevated for reliable forced locking (per README).
 Tests are **plain scripts run directly**, not pytest/unittest. Each prints `[OK]/[FAIL]` and exits non-zero (`sys.exit(1)`) on failure — the exit code is reliable. Run from the project dir (`eye_protect` reads the relative `config.json`). Substitute the full interpreter path on the dev machine.
 
 ```bash
+cd tests
 python test_logic.py          # core: timer, rest check, state transitions, cancellation
 python test_edge_cases.py     # config validation (incl. soft-prompt keys + clamps), log-dir, concurrent timers
 python test_integration.py    # full cycle sim, stress, invalid config, timer cleanup
@@ -31,10 +32,10 @@ python test_exit.py           # launches eye_protect.py as subprocess, sends SIG
 python test_service.py        # install/start/process/uninstall verification
 ```
 
-`test_logic.py` is config-agnostic: it verifies loading by comparing the instance against `config.json`'s actual values, so it passes with any valid config. `test_prompt.py` stubs `lock_screen` and exercises the state machine with `prompt_hwnd=None` (no real window). `test_edge_cases.py` and `test_integration.py` back up `config.json` to `config.json.backup` and restore it in a `finally` block — they mutate config during the run, so don't run them concurrently. `test_service.py`, `test_exit.py`, and `test_ctrl_c.py` actually launch `eye_protect.py` (and `test_service.py` touches the Startup folder) — heavier, and can leave a background process that will lock the screen after `work_duration` minutes; run them deliberately and kill the process afterward.
+Tests live in `tests/` and share `tests/_bootstrap.py` — it computes the project root, adds it to `sys.path`, and `os.chdir`s there, so `from eye_protect import …` works and relative `config.json` paths land at the project root (run them from the `tests/` directory). `test_logic.py` is config-agnostic (compares instance vs `config.json`'s actual values). `test_prompt.py` stubs `lock_screen` and exercises the state machine with `prompt_hwnd=None` (no real window). `test_edge_cases.py` and `test_integration.py` back up `config.json` to `config.json.backup` and restore it in a `finally` block — they mutate config during the run, so don't run them concurrently. `test_service.py`, `test_exit.py`, and `test_ctrl_c.py` actually launch `eye_protect.py` (and `test_service.py` touches the Startup folder) — heavier, and can leave a background process that will lock the screen after `work_duration` minutes; run them deliberately and kill the process afterward.
 
 ### Auto-start install / uninstall (no admin, background)
-- **Install:** `python install_service.py` — creates a `.lnk` shortcut to `pythonw.exe` in the user Startup folder. Fires on login, runs `pythonw.exe` (no console window, background). **No admin needed.**
+- **Install:** `python install_service.py` — creates a `.lnk` shortcut to `pythonw.exe` in the user Startup folder. Fires on login, runs `pythonw.exe` (no console window, background). **No admin needed.** After creating the shortcut it **detects whether eye_protect is already running and launches it in the background if not** (install-takes-effect-immediately).
 - **Uninstall:** `python uninstall_service.py` — deletes the shortcut (and cleans up legacy `EyeProtector.bat` / Task Scheduler task).
 
 ### Package as exe (optional)
@@ -73,7 +74,7 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 - `start_work_timer(duration_minutes=None)` always cancels any existing timer first; `None` = full `work_duration`, else used for postpone.
 
 ### Config & logging
-- `config.json` keys (with per-key code defaults): `work_duration_minutes` (20), `min_rest_duration_seconds` (20), `log_dir` ("logs"), `lock_mode` ("prompt" | "hard"), `grace_seconds` (60), `postpone_minutes` (5), `max_postpones` (3), `prompt_window_width` (360, px), `prompt_window_height` (160, px), `prompt_font_size` (9, points), `prompt_position` ("top-right" | "center" | "top-left" | "bottom-left" | "bottom-right" | "top-center"). A missing config file writes the defaults; missing keys fall back per-key. `lock_mode`/`prompt_position` are case-insensitive (unknown→default); `grace_seconds`/`postpone_minutes` clamp to ≥1, `max_postpones` to ≥0, font ≥4, window width ≥300/height ≥160. The reader uses `utf-8-sig`, so a UTF-8 BOM is tolerated.
+- Config: `config.json` is **local-only** (gitignored). `config.example.json` is the tracked template. On first run, if `config.json` is missing it's copied from `config.example.json` (falling back to code defaults if the example is also absent). To customize without running first: `copy config.example.json config.json` then edit. `config.json` keys (with per-key code defaults): `work_duration_minutes` (20), `min_rest_duration_seconds` (20), `log_dir` ("logs"), `lock_mode` ("prompt" | "hard"), `grace_seconds` (60), `postpone_minutes` (5), `max_postpones` (3), `prompt_window_width` (360, px), `prompt_window_height` (160, px), `prompt_font_size` (9, points), `prompt_position` ("top-right" | "center" | "top-left" | "bottom-left" | "bottom-right" | "top-center"). A missing config file writes the defaults; missing keys fall back per-key. `lock_mode`/`prompt_position` are case-insensitive (unknown→default); `grace_seconds`/`postpone_minutes` clamp to ≥1, `max_postpones` to ≥0, font ≥4, window width ≥300/height ≥160. The reader uses `utf-8-sig`, so a UTF-8 BOM is tolerated.
 - Logs to `logs/eye_protect_YYYYMMDD.log` plus **stderr** (`StreamHandler` default), via `logging.basicConfig` at INFO. WARNING-level transitions (timeout, postpone, grace expiry, lock/unlock) are the primary audit trail.
 
 ### Auto-start installer

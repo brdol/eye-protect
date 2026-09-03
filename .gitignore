@@ -15,7 +15,8 @@ config.json
 config.json.backup
 *.backup
 
-# 启动脚本（install_service_simple.py 按本机路径重新生成）
+# 启动快捷方式（install_service.py 在用户启动文件夹生成，仓库外）
+EyeProtect.lnk
 eye_protect_startup.bat
 
 # PyInstaller 打包产物

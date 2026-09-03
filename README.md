@@ -25,12 +25,20 @@ Windows 下的后台护眼工具：工作时倒计时，到点弹出**软提示*
 git clone https://github.com/brdol/eye-protect.git
 cd eye-protect
 python -m pip install -r requirements.txt   # 安装 pywin32
-python eye_protect.py                         # 首次运行会自动生成默认 config.json；Ctrl+C 退出
+python install_service.py                     # 安装自启动并立即后台启动
 ```
+
+安装即生效：`install_service.py` 创建开机自启快捷方式，并检测/启动后台进程。
+首次启动会自动从 `config.example.json` 复制生成 `config.json`（若不存在）。
 
 > 若 `python` 不在 PATH（如 Microsoft Store 占位符），用解释器全路径，例如 `D:\dev\miniconda\python.exe`。
 
-按需编辑 `config.json`（见下表），再次运行即生效。
+### 自定义配置（无需先启动一次）
+```bash
+copy config.example.json config.json   # 或 cp（bash）
+# 编辑 config.json 改成自己的值
+```
+`config.json` 是本地文件（gitignored，不入库），`config.example.json` 是带说明的模板（入库）。
 
 ## 配置说明（`config.json`）
 
@@ -63,7 +71,7 @@ python eye_protect.py
 ```bash
 python install_service.py
 ```
-在用户启动文件夹创建指向 `pythonw.exe` 的快捷方式（`.lnk`），登录时后台启动，**无终端窗口，全程零管理员**。安装脚本会顺带清理旧方式残留。
+在用户启动文件夹创建指向 `pythonw.exe` 的快捷方式（`.lnk`），登录时后台启动，**无终端窗口，全程零管理员**。安装脚本会顺带清理旧方式残留，并**检测/后台启动**当前进程（安装即生效，无需等下次登录）。
 
 ### 卸载自启动
 ```bash
@@ -85,6 +93,7 @@ python uninstall_service.py
 测试为**普通脚本**（非 pytest），各打印 `[OK]/[FAIL]`，失败退出码非 0：
 
 ```bash
+cd tests
 python test_logic.py          # 核心：计时、休息判定、状态转换、取消
 python test_prompt.py         # 软提示状态逻辑：推迟（不足/达上限）、宽限、路由、提示期间锁屏
 python test_edge_cases.py     # 配置校验（含软提示键与钳制）、日志目录、并发计时

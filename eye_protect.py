@@ -98,7 +98,14 @@ class EyeProtector:
             with open(self.config_file, 'r', encoding='utf-8-sig') as f:
                 config = json.load(f)
         else:
-            config = default_config
+            # 首次运行：优先从 config.example.json 复制（带示例值的模板），
+            # 否则用代码内默认值。config.json 始终是本地文件（gitignored）。
+            example = os.path.join(SCRIPT_DIR, "config.example.json")
+            if os.path.exists(example):
+                with open(example, 'r', encoding='utf-8-sig') as f:
+                    config = json.load(f)
+            else:
+                config = default_config
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
 
