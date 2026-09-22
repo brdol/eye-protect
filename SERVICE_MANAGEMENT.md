@@ -16,6 +16,12 @@ python uninstall_service.py
 - 任务管理器 → 启动应用 → 找 `EyeProtect`
 - 或资源管理器地址栏输入 `shell:startup`，可见 `EyeProtect.lnk`（右键属性可看目标）
 
+## 重启 / 应用配置
+```bash
+python restart_service.py
+```
+结束所有命令行匹配本项目 `eye_protect.py` 的旧实例，再用 `pythonw.exe` 后台启动新实例。没有运行中的实例时，它就是启动命令；修改 `config.json` 后运行即可立即生效。无需管理员、无终端窗口。
+
 ## 停止运行中的程序
 - 任务管理器 → 结束 `pythonw.exe`（命令行含 `eye_protect.py`）
 

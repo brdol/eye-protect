@@ -78,6 +78,12 @@ python install_service.py
 python uninstall_service.py
 ```
 
+### 重启 / 应用配置
+```bash
+python restart_service.py
+```
+结束旧的 `eye_protect.py` 实例并用 `pythonw.exe` 后台启动新实例；如果当前未运行，则直接启动。修改 `config.json` 后运行此命令即可立即生效，无需打开任务管理器，无需管理员，也不会出现终端窗口。
+
 ### 停止运行中的程序
 - 任务管理器结束 `pythonw.exe`（命令行含 `eye_protect.py`）。
 - 想要前台可见控制台调试，直接 `python eye_protect.py` 运行即可（与自启动互不影响）。

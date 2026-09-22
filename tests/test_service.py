@@ -62,8 +62,9 @@ def test_manual_start():
 
     # 检查进程（pythonw.exe，命令行含 eye_protect.py）
     result = subprocess.run(
-        'wmic process where "commandline like \'%eye_protect.py%\'" get name',
-        shell=True, capture_output=True, text=True
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('python.exe','pythonw.exe') -and $_.CommandLine -like '*eye_protect.py*' } | Select-Object -ExpandProperty Name"],
+        capture_output=True, text=True
     )
 
     if "python" in result.stdout.lower():
