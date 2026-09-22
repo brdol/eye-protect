@@ -256,14 +256,14 @@ class EyeProtector:
         # 直接创建子控件（pywin32 的 CreateWindowEx 不保证同步派发 WM_CREATE）
         self._create_prompt_controls(self.prompt_hwnd)
 
-        # 权威超时：守护线程定时器，独立于 UI 事件循环——UI 卡住/失焦也会触发锁屏
+        # 宽限超时只负责“跳过”本轮，不锁屏；仍由独立守护定时器执行，避免依赖 UI 事件循环
         self.grace_timer = threading.Timer(self.grace_seconds, self.on_grace_expired)
         self.grace_timer.daemon = True
         self.grace_timer.start()
         # 仅用于刷新倒计时显示的 1 秒定时器（非权威）
         ctypes.windll.user32.SetTimer(int(self.prompt_hwnd), IDT_PROMPT_TICK, 1000, 0)
 
-        self.logger.info(f"显示休息提示，{self.grace_seconds}秒无操作将自动锁屏")
+        self.logger.info(f"显示休息提示，{self.grace_seconds}秒无操作将自动跳过")
 
     def _create_prompt_controls(self, hwnd):
         """创建子控件（在 show_prompt 中直接调用，主线程）。文字框居中变窄、内容精简。"""
@@ -327,36 +327,35 @@ class EyeProtector:
         self._teardown_prompt()
         self.enter_rest()
 
-    def on_prompt_postpone(self):
-        """点击“推迟”或关闭窗口(X)：推迟休息。已达上限则强制锁屏。"""
-        if not self.prompt_active:
-            return
+    def _postpone_without_prompt(self):
+        """按一次推迟处理，但不要求提示窗口仍存在。"""
         if self.postpone_count >= self.max_postpones:
-            self.logger.warning(f"推迟次数已达上限({self.postpone_count}/{self.max_postpones})，强制锁屏")
-            self._teardown_prompt()
+            self.logger.warning(f"跳过次数已达上限({self.postpone_count}/{self.max_postpones})，强制锁屏")
             self.enter_rest()
             return
         self.postpone_count += 1
-        self.logger.info(f"用户推迟({self.postpone_count}/{self.max_postpones})，{self.postpone_minutes}分钟后再次提示")
-        self._teardown_prompt()
+        self.logger.info(f"跳过本轮({self.postpone_count}/{self.max_postpones})，{self.postpone_minutes}分钟后再次提示")
         self.start_work_timer(self.postpone_minutes)
 
+    def on_prompt_postpone(self):
+        """点击“推迟”或关闭窗口(X)：临时跳过，计入上限。"""
+        if not self.prompt_active:
+            return
+        self._teardown_prompt()
+        self._postpone_without_prompt()
+
     def on_grace_expired(self):
-        """宽限定时器（工作线程）回调：直接锁屏（线程安全），并通知主线程清理。"""
-        self.logger.warning(f"宽限期满({self.grace_seconds}秒)，强制锁屏")
-        self.lock_screen()
+        """宽限定时器（工作线程）回调：按“跳过”处理，不锁屏。"""
         if self.hwnd:
             win32api.PostMessage(self.hwnd, WM_APP_GRACE_EXPIRED, 0, 0)
 
     def on_grace_timeout(self):
-        """主线程收到宽限期满消息：清理提示并进入休息。
-        锁屏已由 on_grace_expired 在工作线程执行，此处不再重复调用 LockWorkStation
-        （两次叠加在某些会话/电源态下会阻塞主线程，导致后续收不到 WTS 事件）。"""
+        """主线程收到宽限期满消息：关闭提示并按一次推迟处理。"""
         if not self.prompt_active:
             return
+        self.logger.info(f"宽限期满({self.grace_seconds}秒)，按跳过处理")
         self._teardown_prompt()
-        self.is_resting = True
-        self.logger.info("宽限超时，进入休息")
+        self._postpone_without_prompt()
 
     def prompt_wnd_proc(self, hwnd, msg, wparam, lparam):
         """提示窗口过程（主线程）。"""
@@ -382,7 +381,7 @@ class EyeProtector:
                 remaining = self.grace_seconds - int(time.time() - self.prompt_shown_at)
                 if remaining < 0:
                     remaining = 0
-                text = f"{remaining} 秒" if remaining > 0 else "正在锁屏…"
+                text = f"{remaining} 秒" if remaining > 0 else "正在跳过…"
                 if self._prompt_count_static:
                     win32gui.SetWindowText(self._prompt_count_static, text)
                 return 0

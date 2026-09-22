@@ -62,15 +62,33 @@ def test_postpone_at_cap():
 
 
 def test_grace_timeout_while_prompting():
-    print("测试3: 宽限期满（提示中）→ 锁屏")
+    print("测试3: 宽限期满（提示中）→ 按跳过处理，不锁屏")
     p = new_protector()
     p.prompt_active = True
     try:
         p.on_grace_timeout()
-        assert p.is_resting, "应进入休息"
+        assert not p.is_resting, "宽限超时不应锁屏"
         assert not p.prompt_active, "提示应已关闭"
-        print("  [OK] 宽限期满触发锁屏")
+        assert p.postpone_count == 1, f"应计入一次跳过，实际{p.postpone_count}"
+        assert p.work_timer is not None, "应启动推迟计时器"
+        assert p.work_timer.interval == p.postpone_minutes * 60, "推迟计时器时长错误"
+        print("  [OK] 宽限超时按跳过处理，不锁屏")
         print("  [OK] 测试3通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_grace_timeout_at_cap():
+    print("测试3b: 宽限期满且已达上限 → 强制锁屏")
+    p = new_protector()
+    p.prompt_active = True
+    p.postpone_count = p.max_postpones
+    try:
+        p.on_grace_timeout()
+        assert p.is_resting, "达上限后应强制锁屏"
+        assert not p.prompt_active, "提示应已关闭"
+        print("  [OK] 达上限后宽限超时强制锁屏")
+        print("  [OK] 测试3b通过\n")
     finally:
         cleanup(p)
 
@@ -79,10 +97,12 @@ def test_grace_timeout_noop_when_idle():
     print("测试4: 非提示时宽限期满为空操作")
     p = new_protector()
     p.prompt_active = False
+    p.postpone_count = 0
     try:
         p.on_grace_timeout()
         assert not p.is_resting, "不应进入休息"
         assert not p.prompt_active, "提示状态不变"
+        assert p.postpone_count == 0, "非提示时不应计入跳过次数"
         print("  [OK] 非提示时为空操作")
         print("  [OK] 测试4通过\n")
     finally:
@@ -164,6 +184,7 @@ if __name__ == "__main__":
         test_postpone_under_cap()
         test_postpone_at_cap()
         test_grace_timeout_while_prompting()
+        test_grace_timeout_at_cap()
         test_grace_timeout_noop_when_idle()
         test_sufficient_rest_resets_count()
         test_insufficient_rest_keeps_count()
