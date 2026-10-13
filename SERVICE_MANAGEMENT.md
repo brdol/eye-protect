@@ -1,5 +1,15 @@
 # 护眼软件管理命令
 
+## 双击运行（最省事）
+
+| 脚本 | 作用 |
+|---|---|
+| `install.bat` | 安装开机自启动，并立即后台启动 |
+| `uninstall.bat` | 移除开机自启动 |
+| `restart.bat` | 重启 / 应用配置改动 |
+
+无需命令行，双击即可；要求 `python` 在 PATH 中。
+
 ## 安装开机自启动（无需管理员，后台运行）
 ```bash
 python install_service.py

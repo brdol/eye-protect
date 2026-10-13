@@ -38,6 +38,8 @@ Tests live in `tests/` and share `tests/_bootstrap.py` — it computes the proje
 - **Install:** `python install_service.py` — creates a `.lnk` shortcut to `pythonw.exe` in the user Startup folder. Fires on login, runs `pythonw.exe` (no console window, background). **No admin needed.** After creating the shortcut it **detects whether eye_protect is already running and launches it in the background if not** (install-takes-effect-immediately).
 - **Uninstall:** `python uninstall_service.py` — deletes the shortcut (and cleans up legacy `EyeProtector.bat` / Task Scheduler task).
 - **Restart / apply config:** `python restart_service.py` — kills matching `eye_protect.py` instances and starts `pythonw.exe` in the background; if none is running, it acts as a start command.
+- **Double-clickable launchers** (for non-CLI users): `install.bat` / `uninstall.bat` / `restart.bat` at the repo root — pure-ASCII thin wrappers that call the matching `*_service.py` via `python` (`py -3` if the launcher exists). No hardcoded paths.
+- **Process plumbing lives in `procutil.py`** (`find_eye_protect_pids` / `is_running` / `start_background` / `stop_pids`), shared by `install_service.py` and `restart_service.py`. It queries via PowerShell/CIM because Windows 11 may not ship `wmic`; a diverged duplicate of this logic previously made `install_service.py` spawn a second instance every run.
 
 ### Package as exe (optional)
 ```bash

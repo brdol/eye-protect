@@ -62,31 +62,36 @@ copy config.example.json config.json   # 或 cp（bash）
 
 ## 运行方式
 
-### 直接运行（前台，可见控制台）
+### 双击运行（推荐给普通用户）
+项目根目录有三个双击即用的批处理，不需要打开命令行：
+
+| 脚本 | 作用 |
+|---|---|
+| `install.bat` | 安装开机自启动，并立即在后台启动（无需管理员） |
+| `uninstall.bat` | 移除开机自启动 |
+| `restart.bat` | 重启（让 `config.json` 改动立即生效）；未运行时就等于启动 |
+
+它们只是薄封装，内部仍调用对应的 `*_service.py`。要求 `python` 在 PATH 中（若存在 `py` 启动器则优先用 `py -3`）。
+
+> 若双击后提示 `Python was not found ... Microsoft Store`，说明 `python` 被 Microsoft Store 的占位符拦截了：在「设置 → 应用 → 高级应用设置 → 应用执行别名」里关闭 `python.exe` / `python3.exe` 即可（一次性，之后全系统受益）。
+
+### 命令行方式（与双击等价）
+```bash
+python install_service.py     # 安装自启动（并立即后台启动）
+python uninstall_service.py   # 卸载自启动
+python restart_service.py     # 重启 / 应用配置
+```
+
+安装即在用户启动文件夹创建指向 `pythonw.exe` 的快捷方式（`.lnk`），登录时后台启动，**无终端窗口，全程零管理员**。安装脚本会顺带清理旧方式残留，并在未运行时**立即后台启动**（安装即生效，无需等下次登录）。
+
+### 前台调试运行
 ```bash
 python eye_protect.py
 ```
-
-### 开机自启动（无需管理员，后台运行）
-```bash
-python install_service.py
-```
-在用户启动文件夹创建指向 `pythonw.exe` 的快捷方式（`.lnk`），登录时后台启动，**无终端窗口，全程零管理员**。安装脚本会顺带清理旧方式残留，并**检测/后台启动**当前进程（安装即生效，无需等下次登录）。
-
-### 卸载自启动
-```bash
-python uninstall_service.py
-```
-
-### 重启 / 应用配置
-```bash
-python restart_service.py
-```
-结束旧的 `eye_protect.py` 实例并用 `pythonw.exe` 后台启动新实例；如果当前未运行，则直接启动。修改 `config.json` 后运行此命令即可立即生效，无需打开任务管理器，无需管理员，也不会出现终端窗口。
+可见控制台输出；与自启动互不影响。
 
 ### 停止运行中的程序
 - 任务管理器结束 `pythonw.exe`（命令行含 `eye_protect.py`）。
-- 想要前台可见控制台调试，直接 `python eye_protect.py` 运行即可（与自启动互不影响）。
 
 ## 日志
 

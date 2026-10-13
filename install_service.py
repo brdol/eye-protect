@@ -13,6 +13,8 @@ except ImportError:
     print("[FAIL] 缺少 pywin32，请先运行: python -m pip install -r requirements.txt")
     sys.exit(1)
 
+import procutil
+
 TASK_NAME = "EyeProtector"
 SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eye_protect.py")
 
@@ -20,32 +22,6 @@ SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eye_prot
 def get_startup_folder():
     return os.path.join(os.environ["APPDATA"],
                         "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
-
-
-def is_running():
-    """检测 eye_protect 是否正在运行（命令行含 eye_protect.py）。"""
-    try:
-        out = subprocess.check_output(
-            'wmic process where "commandline like \'%eye_protect.py%\'" get name',
-            shell=True, stderr=subprocess.DEVNULL, text=True)
-        return "python" in out.lower()
-    except Exception:
-        return False
-
-
-def start_now():
-    """后台启动 eye_protect（pythonw，无窗口），安装即生效。"""
-    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    if not os.path.exists(pythonw):
-        print("[WARN] 未找到 pythonw.exe，跳过立即启动（下次登录会自动启动）。")
-        return
-    try:
-        subprocess.Popen([pythonw, SCRIPT_PATH],
-                          cwd=os.path.dirname(SCRIPT_PATH),
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"[OK] 已后台启动 eye_protect（{pythonw}）。")
-    except Exception as e:
-        print(f"[WARN] 启动失败（下次登录仍会自动启动）: {e}")
 
 
 def _cleanup_old_methods(startup_folder):
@@ -108,12 +84,13 @@ def install_shortcut():
     print("  - 卸载: python uninstall_service.py")
 
     # 安装即生效：若未在跑，后台启动一次（首次会生成 config.json）
-    if is_running():
+    if procutil.is_running():
         print()
         print("检测到 eye_protect 已在运行，无需重复启动。")
     else:
         print()
-        start_now()
+        if procutil.start_background():
+            print("[OK] 已后台启动 eye_protect。")
     return True
 
 
