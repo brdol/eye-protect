@@ -74,7 +74,15 @@ copy config.example.json config.json   # 或 cp（bash）
 | `uninstall.bat` | 移除开机自启动 |
 | `restart.bat` | 重启（让 `config.json` 改动立即生效）；未运行时就等于启动 |
 
-它们只是薄封装，内部仍调用对应的 `*_service.py`。要求 `python` 在 PATH 中（若存在 `py` 启动器则优先用 `py -3`）。
+它们只是薄封装，内部仍调用对应的 `*_service.py`。解释器由 `_find_python.bat` 统一解析，优先级为：
+
+1. `EYE_PROTECT_PYTHON` 环境变量（指定完整 `python.exe` 路径）
+2. `py -3` 启动器
+3. **Windows 注册表 `PythonCore`**（`HKLM`/`HKCU`，标准安装与 conda 都会注册，**不依赖 PATH**）
+4. PATH 中的 `python`（自动跳过 Microsoft Store 占位符）
+5. 回退到 `python`
+
+> 这解决了"终端里能用、双击却提示找不到 Python"的问题：双击继承的是 Explorer 的 PATH，可能没有 conda 的路径或先命中 Store 占位符；而注册表查询不受 PATH 影响。
 
 > **双击时窗口不会一闪而过**：脚本会打印 `[DONE]` 或 `[FAILED] exit code N`，然后等待按键再关闭（`9009` 表示找不到 Python，并会附带提示）。从已有终端运行不会停顿；自动化场景可设置 `EYE_PROTECT_NO_PAUSE=1` 强制跳过等待。
 

@@ -10,6 +10,12 @@ import sys
 
 SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eye_protect.py")
 
+# 用绝对路径调用 PowerShell：Explorer 双击启动时继承的 PATH 可能不含 WindowsPowerShell 目录，
+# 裸 `powershell.exe` 会找不到，进而误判“未运行”并拉起重复实例。
+_POWERSHELL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                           "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+POWERSHELL = _POWERSHELL if os.path.exists(_POWERSHELL) else "powershell.exe"
+
 
 def find_eye_protect_pids():
     """返回命令行包含本项目 eye_protect.py 的 Python 进程 PID 列表。"""
@@ -21,7 +27,7 @@ def find_eye_protect_pids():
             "Select-Object -ExpandProperty ProcessId"
         )
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output=True, text=True, check=False)
         pids = [int(line.strip()) for line in result.stdout.splitlines() if line.strip().isdigit()]
         if pids:

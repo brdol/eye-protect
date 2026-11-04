@@ -3,8 +3,7 @@ REM EyeProtect - restart / apply config (double-click to run)
 setlocal
 cd /d "%~dp0"
 
-set "PY=python"
-where py >nul 2>nul && set "PY=py -3"
+call "%~dp0_find_python.bat"
 
 %PY% "%~dp0restart_service.py"
 set "RC=%ERRORLEVEL%"
@@ -12,7 +11,11 @@ set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
     echo [FAILED] exit code %RC%
-    if "%RC%"=="9009" echo [HINT] Python not found. Install Python or add it to PATH.
+    if "%RC%"=="9009" (
+        echo [HINT] Python not found. Install Python or add it to PATH.
+    ) else (
+        echo [HINT] Python failed to start. Set EYE_PROTECT_PYTHON to a full python.exe path if needed.
+    )
 ) else (
     echo [DONE]
 )
