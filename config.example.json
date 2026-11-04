@@ -6,8 +6,6 @@
     "grace_seconds": 60,
     "postpone_minutes": 5,
     "max_postpones": 3,
-    "prompt_window_width": 360,
-    "prompt_window_height": 160,
     "prompt_font_size": 9,
     "prompt_position": "top-right"
 }
