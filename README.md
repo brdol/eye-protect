@@ -76,6 +76,8 @@ copy config.example.json config.json   # 或 cp（bash）
 
 它们只是薄封装，内部仍调用对应的 `*_service.py`。要求 `python` 在 PATH 中（若存在 `py` 启动器则优先用 `py -3`）。
 
+> **双击时窗口不会一闪而过**：脚本会打印 `[DONE]` 或 `[FAILED] exit code N`，然后等待按键再关闭（`9009` 表示找不到 Python，并会附带提示）。从已有终端运行不会停顿；自动化场景可设置 `EYE_PROTECT_NO_PAUSE=1` 强制跳过等待。
+
 > 若双击后提示 `Python was not found ... Microsoft Store`，说明 `python` 被 Microsoft Store 的占位符拦截了：在「设置 → 应用 → 高级应用设置 → 应用执行别名」里关闭 `python.exe` / `python3.exe` 即可（一次性，之后全系统受益）。
 
 ### 命令行方式（与双击等价）
