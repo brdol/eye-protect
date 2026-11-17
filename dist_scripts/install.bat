@@ -3,11 +3,18 @@ REM EyeProtect - install in the current folder (double-click to run)
 setlocal
 cd /d "%~dp0"
 
+if not exist "%~dp0python\python.exe" (
+    echo [FAIL] python\python.exe not found. Please extract the complete package.
+    set "RC=1"
+    goto :done
+)
+
 if not exist "%~dp0config.json" if exist "%~dp0config.example.json" copy /y "%~dp0config.example.json" "%~dp0config.json" >nul
 
-"%~dp0EyeProtect.exe" --install
+"%~dp0python\python.exe" "%~dp0eye_protect.py" --install
 set "RC=%ERRORLEVEL%"
 
+:done
 if not "%RC%"=="0" (echo [FAILED] exit code %RC%) else (echo [DONE])
 call :pause_if_double_click
 exit /b %RC%

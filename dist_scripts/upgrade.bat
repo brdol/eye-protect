@@ -1,9 +1,9 @@
 @echo off
 REM EyeProtect - check and install the latest release (double-click to run)
 setlocal
-"%~dp0EyeProtect.exe" --upgrade
+cd /d "%~dp0"
+"%~dp0python\python.exe" "%~dp0eye_protect.py" --upgrade
 set "RC=%ERRORLEVEL%"
-
 if not "%RC%"=="0" (echo [FAILED] exit code %RC%) else (echo [DONE])
 call :pause_if_double_click
 exit /b %RC%

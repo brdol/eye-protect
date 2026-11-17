@@ -133,14 +133,16 @@ python test_integration.py    # 完整周期模拟、压力、非法配置、计
 
 ## 发布版（安装包）
 
-发布版会把 Python 运行时一起打包，使用者**不需要安装 Python**。
+发布版随包携带 **Python 官方的 embeddable 运行时**，使用者**不需要安装 Python**。
+
+> 运行时可执行文件（`python.exe` / `pythonw.exe`）由 Python Software Foundation 官方签名。发布包**不生成自定义 exe**，因此不会触发 SmartScreen 的"未知发布者"提示，也不需要购买代码签名证书。
 
 ### 安装
 
 1. 下载 `eye-protect_<version>_windows_amd64.zip`，**解压到一个固定目录**（例如 `D:\green\EyeProtect`）
 2. 双击 `install.bat`：
    - 在当前位置生成 `config.json`（如缺失）
-   - 创建开机自启动（快捷方式指向当前目录的 `EyeProtect.exe`，无需管理员）
+   - 创建开机自启动（快捷方式指向 `python\pythonw.exe`，无需管理员）
    - 立即在后台启动
 
 > 程序在解压目录原地运行，不会复制到其它位置。**安装后请勿移动该目录**；如果移动了，重新双击一次 `install.bat` 即可修复自启动路径。
@@ -149,8 +151,10 @@ python test_integration.py    # 完整周期模拟、压力、非法配置、计
 
 ```
 <解压目录>\
-    EyeProtect.exe          主程序（已内含 Python，无需安装 Python）
-    _internal\              Python 运行时与依赖
+    python\                 官方 embeddable Python（含 python.exe / pythonw.exe）
+    eye_protect.py          主程序
+    install_service.py / uninstall_service.py / restart_service.py
+    procutil.py / updater.py
     config.json             首次运行/安装时生成
     logs\                   按日日志
     README.md / LICENSE / NOTICE
@@ -168,11 +172,11 @@ python test_integration.py    # 完整周期模拟、压力、非法配置、计
 ### 构建发布包（维护者）
 
 ```powershell
-pip install pywin32 pyinstaller
 powershell -ExecutionPolicy Bypass -File build_release.ps1
 # 产物：dist\eye-protect_<version>_windows_amd64.zip
 ```
 
+脚本会自动下载官方 embeddable Python 3.12、把 pywin32 安装进随包运行时，并用它执行导入自检。
 推送 `v*` 标签时，GitHub Actions 会自动构建并把 zip 上传到 Release。
 
 ## 注意事项

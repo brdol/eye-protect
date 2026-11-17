@@ -1,7 +1,8 @@
 @echo off
 REM EyeProtect - restart (apply config changes) (double-click to run)
 setlocal
-"%~dp0EyeProtect.exe" --restart
+cd /d "%~dp0"
+"%~dp0python\python.exe" "%~dp0eye_protect.py" --restart
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" (echo [FAILED] exit code %RC%) else (echo [DONE])
 call :pause_if_double_click

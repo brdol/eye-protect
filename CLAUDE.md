@@ -43,13 +43,12 @@ Tests live in `tests/` and share `tests/_bootstrap.py` — it computes the proje
 - **`procutil.py` calls PowerShell by absolute path** (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`) — an Explorer-launched process may have a PATH without that directory, and a bare `powershell.exe` would silently fail the "already running" check and spawn a duplicate instance.
 - **Process plumbing lives in `procutil.py`** (`find_eye_protect_pids` / `is_running` / `start_background` / `stop_pids`), shared by `install_service.py` and `restart_service.py`. It queries via PowerShell/CIM because Windows 11 may not ship `wmic`; a diverged duplicate of this logic previously made `install_service.py` spawn a second instance every run.
 
-### Build a release (PyInstaller onedir)
+### Build a release (official embeddable Python)
 ```powershell
-pip install pywin32 pyinstaller
 powershell -ExecutionPolicy Bypass -File build_release.ps1
 # output: dist\eye-protect_<version>_windows_amd64.zip
 ```
-Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds on `windows-latest` and uploads the zip to the GitHub Release.
+The script downloads the official `python-3.12.10-embed-amd64.zip`, enables site-packages, installs `pywin32` into that bundled runtime, copies the app sources + `dist_scripts/*.bat`, runs an import/`--version` sanity check, and zips the folder. **No custom exe is produced**, so the signed `python.exe` / `pythonw.exe` from python.org are what run at the user's machine (no SmartScreen "unknown publisher" prompt). Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs this script and uploads the zip to the Release.
 
 ### Runtime CLI (packaged exe only)
 `EyeProtect.exe --version | --install | --uninstall | --start | --stop | --restart | --upgrade`.
@@ -110,12 +109,12 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 - `uninstall_service.py` — deletes the `.lnk` (+ legacy cleanup).
 
 ### Distribution & update
-- **Packaging**: PyInstaller **onedir** built as a **console** exe. In app mode the code calls `FreeConsole()` so no console window lingers; CLI subcommands keep stdout so the `.bat` wrappers can show results.
-- **Frozen paths**: `SCRIPT_DIR` uses `dirname(sys.executable)` when `sys.frozen`; `procutil` matches `EyeProtect.exe` instead of `eye_protect.py`.
-- **`dist_scripts/*.bat`** are copied into the release zip (`install`, `upgrade`, `start`, `stop`, `restart`, `uninstall`). Pure ASCII, pause only on double-click.
-- **`install.bat`** runs the app **in place** (wherever the zip was extracted): it creates `config.json` from `config.example.json` if missing, then calls `EyeProtect.exe --install`, which writes a Startup-folder shortcut pointing at the current `EyeProtect.exe` and starts it. Moving the folder afterwards requires re-running `install.bat` to fix the shortcut path.
-- **`updater.py`** (`--upgrade`): fetch `releases/latest` → download the zip → extract → stop other instances → write a temporary `.bat` that waits for the upgrader PID, robocopies the new files over the install dir (`/MIR`, excluding `config.json` and `logs`), then starts the new exe. A helper is required because Windows cannot overwrite a running exe / `_internal`.
-- **`procutil` excludes `os.getpid()`** from process discovery, otherwise `EyeProtect.exe --stop/--restart` would kill itself.
+- **Packaging**: ships the **official embeddable Python 3.12** under `python\` plus the app sources (`*.py`) and `dist_scripts/*.bat`. No custom exe is built: the user runs `python\pythonw.exe eye_protect.py`, and `python.exe`/`pythonw.exe` are signed by the Python Software Foundation — so no SmartScreen "unknown publisher" prompt and no code-signing certificate.
+- **`dist_scripts/*.bat`** (`install`, `upgrade`, `start`, `stop`, `restart`, `uninstall`) are pure ASCII, pause only on double-click, and call `python\python.exe eye_protect.py --<action>`. The CLI flags are an internal interface, not user-facing.
+- **`install.bat`** runs in place (wherever the zip was extracted): creates `config.json` from `config.example.json` if missing, then `--install` writes a Startup-folder shortcut to `python\pythonw.exe` + `eye_protect.py` and starts it. Moving the folder requires re-running `install.bat`.
+- **`updater.py`** (`--upgrade`): fetch `releases/latest` → download zip → extract → stop other instances → copy only the **app files** (`*.py`, `*.bat`, docs) into the install dir, leaving `config.json`, `logs`, and `python\` untouched → restart. No helper process is needed because `.py` files are not locked while running; a runtime upgrade requires a full re-download.
+- **`procutil` excludes `os.getpid()`** so `--stop/--restart` don't kill the CLI process itself.
+- Frozen-mode branches (`sys.frozen`) are retained for compatibility but are **not used** by the release build.
 - The repo is **public** (Apache-2.0), so Release assets are anonymously downloadable; the main repo is also the release repo.
 
 ## Gotchas

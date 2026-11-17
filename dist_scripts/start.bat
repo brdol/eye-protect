@@ -1,7 +1,8 @@
 @echo off
 REM EyeProtect - start in background (double-click to run)
 setlocal
-"%~dp0EyeProtect.exe" --start
+cd /d "%~dp0"
+"%~dp0python\python.exe" "%~dp0eye_protect.py" --start
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" (echo [FAILED] exit code %RC%) else (echo [DONE])
 call :pause_if_double_click

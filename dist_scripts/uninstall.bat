@@ -1,7 +1,8 @@
 @echo off
 REM EyeProtect - remove auto-start (double-click to run)
 setlocal
-"%~dp0EyeProtect.exe" --uninstall
+cd /d "%~dp0"
+"%~dp0python\python.exe" "%~dp0eye_protect.py" --uninstall
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" (echo [FAILED] exit code %RC%) else (echo [DONE])
 echo.
