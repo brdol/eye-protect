@@ -42,6 +42,13 @@ IDT_PROMPT_TICK = 1     # 倒计时 SetTimer 标识（仅用于刷新显示）
 WH_KEYBOARD_LL = 13
 IDC_HAND = 32649
 
+# 统一状态机：锁屏与遮罩都只是“休息”的 blocker（阻断器），不是两种状态
+STATE_WORKING = "working"
+STATE_PROMPTING = "prompting"
+STATE_RESTING = "resting"
+BLOCKER_OVERLAY = "overlay"
+BLOCKER_LOCK = "lock"
+
 # 置顶但不抢键盘焦点
 WS_EX_NOACTIVATE = getattr(win32con, "WS_EX_NOACTIVATE", 0x08000000)
 
@@ -145,17 +152,20 @@ class EyeProtector:
         self.setup_logging()
 
         self.work_timer = None
-        self.lock_time = None
-        self.is_resting = False
         self.hwnd = None
         self.running = True
+
+        # 统一状态机（仅在主线程修改）。锁屏/遮罩只是休息的 blocker。
+        self.state = STATE_WORKING
+        self.rest_blocker = None
+        self.rest_started_at = None
+        self.rest_enforced = False
 
         # 软提示相关状态（仅在主线程修改）
         self._hinstance = win32api.GetModuleHandle(None)
         self.postpone_count = 0
         self.dnd_mode = False          # 免打扰：勾选后不锁屏、豁免推迟上限
         self.prompt_hwnd = None
-        self.prompt_active = False
         self.grace_timer = None
         self.prompt_shown_at = None
         self._prompt_msg_static = None
@@ -175,12 +185,10 @@ class EyeProtector:
         self._prompt_eff_dpi = 96
         # 全屏休息遮罩状态（仅在主线程修改）
         self.overlays = []
-        self.overlay_active = False
         self._rest_ready = False
         self._hover_hwnd = None
         self._pressed_hwnd = None
         self._rest_message = OVERLAY_TEXT
-        self._rest_start = None
         self._rest_timer = None
         self._overlay_wc = None
         self._overlay_proc_ref = None
@@ -192,6 +200,20 @@ class EyeProtector:
         self._gdi_setup = False
         self._heartbeat = time.time()
         self._exiting = False
+
+    # ---------- 派生状态（不单独存储，避免多个布尔量彼此漂移） ----------
+
+    @property
+    def is_resting(self):
+        return self.state == STATE_RESTING
+
+    @property
+    def prompt_active(self):
+        return self.state == STATE_PROMPTING
+
+    @property
+    def overlay_active(self):
+        return self.state == STATE_RESTING and self.rest_blocker == BLOCKER_OVERLAY
 
     def _set_dpi_aware(self):
         """声明 Per-Monitor V2 DPI 感知，避免跨屏时窗口/字体错位。"""
@@ -321,14 +343,37 @@ class EyeProtector:
         self.logger.warning(f"工作时长已达{self.work_duration}分钟")
         win32api.PostMessage(self.hwnd, self._route_work_timeout(), 0, 0)
 
-    def enter_rest(self):
-        """进入休息。rest_style=overlay 时显示全屏遮罩（不锁屏），否则锁屏。仅在主线程调用。"""
-        self.is_resting = True
-        if self.rest_style == "overlay":
+    def enter_rest(self, blocker=None):
+        """进入休息会话。blocker 默认取 rest_style；锁屏事件可显式指定 BLOCKER_LOCK。
+
+        只在主线程调用；重复调用是幂等的（已在休息中则不做任何事）。
+        """
+        if self.state == STATE_RESTING:
+            return
+        blocker = blocker or self.rest_style
+        self.state = STATE_RESTING
+        self.rest_blocker = blocker
+        self.rest_started_at = time.time()
+        self.rest_enforced = True
+        if blocker == BLOCKER_OVERLAY:
             self.show_overlay()
         else:
             self.logger.info("进入休息，执行锁屏")
             self.lock_screen()
+
+    def leave_rest(self):
+        """离开休息的唯一出口：清理 UI、复位计数、回到工作计时。"""
+        if self.state != STATE_RESTING:
+            return
+        self._teardown_overlay()
+        self.state = STATE_WORKING
+        self.rest_blocker = None
+        self.rest_started_at = None
+        self.rest_enforced = False
+        self.postpone_count = 0
+        self.dnd_mode = False
+        self.logger.info("休息结束，重置推迟计数与免打扰，回到工作计时")
+        self.start_work_timer()
 
     # ---------- 全屏休息遮罩 ----------
 
@@ -569,8 +614,6 @@ class EyeProtector:
             if hwnd:
                 self.overlays.append(hwnd)
 
-        self.overlay_active = True
-        self._rest_start = time.time()
         self._rest_ready = False
         self._hover_hwnd = None
         self._pressed_hwnd = None
@@ -601,23 +644,15 @@ class EyeProtector:
         self.logger.info("最短休息已满，遮罩上显示“结束休息”按钮")
 
     def on_overlay_release(self):
-        """点击“结束休息”：拆除遮罩并回到工作计时。"""
-        if not self.overlay_active:
+        """点击“结束休息”：离开休息会话。"""
+        if not self.overlay_active or not self._rest_ready:
             return
-        rest = time.time() - (self._rest_start or time.time())
+        rest = time.time() - (self.rest_started_at or time.time())
         self.logger.info(f"用户结束休息（已休息 {rest:.0f} 秒）")
-        self._teardown_overlay()
-        self.is_resting = False
-        self.lock_time = None
-        self.postpone_count = 0
-        self.dnd_mode = False
-        self.start_work_timer()
+        self.leave_rest()
 
     def _teardown_overlay(self):
-        """幂等拆除遮罩：取消计时器、卸载钩子、销毁窗口、释放字体。"""
-        if not self.overlay_active and not self.overlays:
-            return
-        self.overlay_active = False
+        """仅拆除遮罩 UI：取消计时器、卸载钩子、销毁窗口、释放字体（不改状态）。"""
         if self._rest_timer:
             self._rest_timer.cancel()
             self._rest_timer = None
@@ -955,8 +990,8 @@ class EyeProtector:
 
     def show_prompt(self):
         """显示休息提示窗口（主线程）。窗口尺寸由内容实测决定。"""
-        if self.prompt_active or self.is_resting:
-            return  # 已在提示/休息中，忽略（重入守卫）
+        if self.state != STATE_WORKING:
+            return  # 只有工作状态才会弹提示；迟到的消息直接忽略
         if self.work_timer:
             self.work_timer.cancel()
             self.work_timer = None
@@ -990,7 +1025,7 @@ class EyeProtector:
             style, x, y, metrics["win_w"], metrics["win_h"],
             0, 0, self._hinstance, None)
 
-        self.prompt_active = True
+        self.state = STATE_PROMPTING
         self.prompt_shown_at = time.time()
         # 直接创建子控件（pywin32 的 CreateWindowEx 不保证同步派发 WM_CREATE）
         self._create_prompt_controls(self.prompt_hwnd, metrics)
@@ -1110,10 +1145,7 @@ class EyeProtector:
         self.logger.info(f"显示设置变化，提示窗口已重新定位（dpi={eff_dpi}）")
 
     def _teardown_prompt(self):
-        """唯一且幂等的提示关闭路径。按钮/宽限/锁屏/停止都走这里。"""
-        if not self.prompt_active:
-            return
-        self.prompt_active = False  # 先置位，防止重入
+        """仅销毁提示窗口 UI（幂等）；状态由调用方负责。"""
         if self.grace_timer:
             self.grace_timer.cancel()
             self.grace_timer = None
@@ -1133,8 +1165,8 @@ class EyeProtector:
     # ---------- 提示窗口：行为 ----------
 
     def on_prompt_sleep(self):
-        """点击“休息”：立即锁屏进入休息。"""
-        if not self.prompt_active:
+        """点击“休息”：进入休息。"""
+        if self.state != STATE_PROMPTING:
             return
         self.logger.info("用户选择立即休息")
         self._teardown_prompt()
@@ -1143,21 +1175,23 @@ class EyeProtector:
     def _postpone_without_prompt(self):
         """按一次推迟处理，但不要求提示窗口仍存在。"""
         if self.dnd_mode:
-            # 免打扰：不锁屏，也不计入上限
+            # 免打扰：不打断，也不计入上限
             self.logger.info(f"免打扰中，跳过本轮，{self.postpone_minutes}分钟后再次提示")
+            self.state = STATE_WORKING
             self.start_work_timer(self.postpone_minutes)
             return
         if self.postpone_count >= self.max_postpones:
-            self.logger.warning(f"跳过次数已达上限({self.postpone_count}/{self.max_postpones})，强制锁屏")
+            self.logger.warning(f"跳过次数已达上限({self.postpone_count}/{self.max_postpones})，强制休息")
             self.enter_rest()
             return
         self.postpone_count += 1
         self.logger.info(f"跳过本轮({self.postpone_count}/{self.max_postpones})，{self.postpone_minutes}分钟后再次提示")
+        self.state = STATE_WORKING
         self.start_work_timer(self.postpone_minutes)
 
     def on_prompt_postpone(self):
         """点击“推迟”或关闭窗口(X)：临时跳过。"""
-        if not self.prompt_active:
+        if self.state != STATE_PROMPTING:
             return
         self._teardown_prompt()
         self._postpone_without_prompt()
@@ -1168,15 +1202,15 @@ class EyeProtector:
             win32api.PostMessage(self.hwnd, WM_APP_GRACE_EXPIRED, 0, 0)
 
     def on_grace_timeout(self):
-        """主线程收到宽限期满消息：免打扰则跳过，否则强制锁屏。"""
-        if not self.prompt_active:
+        """主线程收到宽限期满消息：免打扰则跳过，否则强制休息。"""
+        if self.state != STATE_PROMPTING:
             return
         self._teardown_prompt()
         if self.dnd_mode:
             self.logger.info(f"宽限期满({self.grace_seconds}秒)，免打扰中，跳过本轮")
             self._postpone_without_prompt()
         else:
-            self.logger.warning(f"宽限期满({self.grace_seconds}秒)，强制锁屏")
+            self.logger.warning(f"宽限期满({self.grace_seconds}秒)，强制休息")
             self.enter_rest()
 
     def prompt_wnd_proc(self, hwnd, msg, wparam, lparam):
@@ -1230,7 +1264,6 @@ class EyeProtector:
                 return 0
             if msg == win32con.WM_DESTROY:
                 self.prompt_hwnd = None
-                self.prompt_active = False
                 return 0
         except Exception as e:
             self.logger.error("prompt_wnd_proc 异常: %s", e, exc_info=True)
@@ -1239,56 +1272,56 @@ class EyeProtector:
     # ---------- 会话事件（主线程） ----------
 
     def on_unlock(self):
-        """解锁事件处理"""
-        current_time = time.time()
-
-        if self.is_resting and self.lock_time:
-            # 检查休息时长（锁屏时长）
-            rest_duration = current_time - self.lock_time
-            if rest_duration < self.min_rest_duration:
-                self.logger.warning(f"休息时间不足（仅{rest_duration:.1f}秒），重置休息并再次锁屏")
-                # 延迟1秒后锁屏，避免立即锁屏
+        """解锁事件处理：锁屏休息按停留时长判定；自愿锁屏只恢复工作计时。"""
+        if self.state == STATE_RESTING and self.rest_blocker == BLOCKER_LOCK:
+            elapsed = time.time() - (self.rest_started_at or time.time())
+            if self.rest_enforced and elapsed < self.min_rest_duration:
+                self.logger.warning(f"休息时间不足（仅{elapsed:.1f}秒），重置休息并再次锁屏")
+                # 重新锁屏会触发 on_lock，由它重新开始计时（解锁过早不累计）
+                self.rest_started_at = None
                 t = threading.Timer(1, self.lock_screen)
                 t.daemon = True
                 t.start()
                 return
-            else:
-                # 休息时间达标：重置推迟计数与免打扰
-                self.is_resting = False
-                self.lock_time = None
-                self.postpone_count = 0
-                self.dnd_mode = False
-                self.logger.info("休息达标，重置推迟计数与免打扰")
+            self.logger.info(f"休息结束（{elapsed:.0f} 秒）")
+            self.leave_rest()
+            return
 
-        # 正常解锁，开始工作计时
-        if not self.is_resting:
+        if self.state == STATE_WORKING:
             self.start_work_timer()
 
     def on_lock(self):
-        """锁屏事件处理"""
-        current_time = time.time()
-        self.lock_time = current_time
+        """锁屏事件处理：按当前状态决定是“休息继续/开始”还是“自愿暂停”。"""
+        now = time.time()
 
-        # 遮罩期间手动锁屏：拆除遮罩，转为锁屏休息（解锁时仍按最短休息校验）
-        if self.overlay_active:
-            self._teardown_overlay()
-            self.is_resting = True
-            self.logger.info("遮罩期间手动锁屏，转入锁屏休息")
+        if self.state == STATE_RESTING:
+            if self.rest_blocker != BLOCKER_LOCK:
+                # 遮罩休息期间锁屏：切换 blocker，休息不中断
+                self._teardown_overlay()
+                self.rest_blocker = BLOCKER_LOCK
+                self.logger.info("遮罩期间锁屏，转入锁屏休息")
+            if self.rest_started_at is None:
+                self.rest_started_at = now  # 提前解锁后的重新锁屏：重新计时
             return
 
-        # 提示期间手动锁屏：视为开始休息，并清理提示
-        if self.prompt_active:
+        if self.state == STATE_PROMPTING:
             self._teardown_prompt()
-            self.is_resting = True
+            self.state = STATE_RESTING
+            self.rest_blocker = BLOCKER_LOCK
+            self.rest_started_at = now
+            self.rest_enforced = True
             self.logger.info("提示期间锁屏，进入休息")
             return
 
-        if not self.is_resting:
-            # 非休息状态的锁屏，暂停工作计时
-            if self.work_timer:
-                self.work_timer.cancel()
-                self.work_timer = None
-                self.logger.info("检测到锁屏事件，暂停工作计时")
+        # WORKING：自愿锁屏，暂停工作计时，不强制最短休息
+        self.state = STATE_RESTING
+        self.rest_blocker = BLOCKER_LOCK
+        self.rest_started_at = now
+        self.rest_enforced = False
+        if self.work_timer:
+            self.work_timer.cancel()
+            self.work_timer = None
+        self.logger.info("工作中锁屏，暂停工作计时")
 
     def stop(self):
         """停止程序"""
@@ -1372,10 +1405,16 @@ class EyeProtector:
                     self.on_lock()
                 return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
             if msg == WM_APP_PROMPT:
-                self.show_prompt()
+                if self.state == STATE_WORKING:
+                    self.show_prompt()
+                else:
+                    self.logger.info("忽略迟到的休息提示（当前不在工作状态）")
                 return 0
             if msg == WM_APP_HARD_LOCK:
-                self.enter_rest()
+                if self.state == STATE_WORKING:
+                    self.enter_rest()
+                else:
+                    self.logger.info("忽略迟到的强制休息（当前不在工作状态）")
                 return 0
             if msg == WM_APP_GRACE_EXPIRED:
                 self.on_grace_timeout()

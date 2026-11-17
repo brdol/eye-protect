@@ -6,55 +6,43 @@ import shutil
 import sys
 from datetime import datetime
 from _bootstrap import *
-from eye_protect import EyeProtector
+from eye_protect import (EyeProtector, STATE_WORKING, STATE_RESTING,
+                         BLOCKER_LOCK, BLOCKER_OVERLAY)
 
 
 def test_full_work_cycle_simulation():
     """测试完整工作周期模拟"""
     print("测试9: 完整工作周期模拟")
 
-    protector = EyeProtector()
-
-    # 模拟场景：工作 -> 强制休息 -> 休息不足 -> 再次休息 -> 休息达标 -> 继续工作
+    p = EyeProtector()
+    p.lock_screen = lambda: None
+    p.show_overlay = lambda: None
 
     # 1. 开始工作
-    protector.start_work_timer()
-    assert protector.work_timer is not None, "工作计时器应该启动"
+    p.start_work_timer()
+    assert p.work_timer is not None, "工作计时器应该启动"
     print("  [OK] 步骤1: 开始工作计时")
 
-    # 2. 模拟工作时间到达，进入休息状态
-    protector.is_resting = True
-    protector.lock_time = time.time()
+    # 2. 强制休息
+    p.enter_rest(BLOCKER_LOCK)
+    assert p.is_resting, "应进入休息"
     print("  [OK] 步骤2: 进入强制休息状态")
 
-    # 3. 模拟休息时间不足（休息时间应明显小于最短休息时长）
-    time.sleep(0.1)
-    protector.lock_time = time.time() - (protector.min_rest_duration / 2)
-    rest_duration = time.time() - protector.lock_time
+    # 3. 休息不足即解锁 → 保持休息并安排重锁
+    p.rest_started_at = time.time() - (p.min_rest_duration / 2)
+    p.on_unlock()
+    assert p.is_resting, "休息不足应保持休息"
+    print("  [OK] 步骤3: 休息不足，保持休息")
+    time.sleep(1.2)
 
-    if rest_duration < protector.min_rest_duration:
-        print(f"  [OK] 步骤3: 检测到休息不足 ({rest_duration:.1f}秒)")
-        # 应该重新锁屏，重置lock_time
-        protector.lock_time = time.time()
-        print("  [OK] 步骤4: 重置休息时间")
+    # 4. 休息足够 → 结束休息并回到工作
+    p.rest_started_at = time.time() - (p.min_rest_duration + 10)
+    p.on_unlock()
+    assert not p.is_resting, "休息足够应结束"
+    assert p.work_timer is not None, "应重新开始工作计时"
+    print("  [OK] 步骤4: 休息达标，重新开始工作计时")
 
-    # 4. 模拟休息时间达标（休息时间应明确超过最短休息时长）
-    protector.lock_time = time.time() - (protector.min_rest_duration + 10)
-    rest_duration = time.time() - protector.lock_time
-
-    if rest_duration >= protector.min_rest_duration:
-        print(f"  [OK] 步骤5: 休息时间达标 ({rest_duration:.1f}秒)")
-        protector.is_resting = False
-        protector.lock_time = None
-        print("  [OK] 步骤6: 退出休息状态")
-
-    # 5. 重新开始工作
-    protector.start_work_timer()
-    assert protector.work_timer is not None, "应该重新开始工作计时"
-    print("  [OK] 步骤7: 重新开始工作计时")
-
-    # 清理
-    protector.work_timer.cancel()
+    p.work_timer.cancel()
     print("  [OK] 测试9通过\n")
 
 
@@ -62,22 +50,23 @@ def test_rapid_state_changes():
     """测试快速状态切换"""
     print("测试10: 快速状态切换压力测试")
 
-    protector = EyeProtector()
+    p = EyeProtector()
+    p.lock_screen = lambda: None
+    p.show_overlay = lambda: None
 
     # 快速切换工作/休息状态
     for i in range(10):
-        protector.is_resting = not protector.is_resting
-        protector.lock_time = time.time() if protector.is_resting else None
-
-        if not protector.is_resting:
-            protector.start_work_timer()
-            if protector.work_timer:
-                protector.work_timer.cancel()
+        if p.state == STATE_WORKING:
+            p.enter_rest(BLOCKER_OVERLAY)
+        else:
+            p.leave_rest()
+        if p.work_timer:
+            p.work_timer.cancel()
 
     print("  [OK] 快速状态切换10次无异常")
 
-    # 验证最终状态一致性
-    assert isinstance(protector.is_resting, bool), "状态应该是布尔值"
+    assert p.state in (STATE_WORKING, STATE_RESTING), "状态应始终合法"
+    assert isinstance(p.overlay_active, bool), "派生状态应为布尔值"
     print("  [OK] 状态一致性正常")
     print("  [OK] 测试10通过\n")
 

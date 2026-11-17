@@ -56,7 +56,9 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 ### States (WORKING / PROMPTING / RESTING) — all shared-state mutations on the main thread
 - **WORKING**: a daemon `threading.Timer` (`work_timer`) counts down to the next prompt.
 - **PROMPTING**: a modeless topmost prompt window is up; a *separate* daemon `threading.Timer` (`grace_timer`) is the authoritative timeout; a cosmetic `SetTimer` only refreshes the countdown text.
-- **RESTING**: `is_resting=True`; the concrete mechanism is `rest_style` — `overlay` shows full-screen blockers (no lock), `lock` calls `LockWorkStation`. Reached from PROMPTING by an explicit 休息 click, by grace timeout when 免打扰 is unchecked, or by hitting the `max_postpones` cap. With `lock`, `on_lock`/`on_unlock` enforce the minimum rest; with `overlay`, the release control appears only after `min_rest_duration` and clicking it ends the rest.
+- **RESTING**: a rest *session* described by three fields — `rest_blocker` (`overlay` | `lock`), `rest_started_at`, and `rest_enforced` (mandated by the app vs. a voluntary lock). The blocker is swappable: locking during an overlay keeps the same session and start time. `enter_rest()` / `leave_rest()` are the only entry/exit paths. `is_resting` / `prompt_active` / `overlay_active` are **derived properties of `state`**, not independent flags.
+- **State guards**: `WM_APP_PROMPT` / `WM_APP_HARD_LOCK` are ignored unless `state == WORKING`. This prevents a stale work-timeout message from creating a prompt/overlay after the session has already been locked or has entered rest.
+- **Lock semantics**: locking while WORKING is a *voluntary pause* (`rest_enforced=False`) — unlocking resumes work without a minimum-rest check. Locking while PROMPTING starts a mandated rest. Locking during an overlay switches the blocker to `lock` without restarting the clock. Unlocking an enforced rest too early re-locks and clears `rest_started_at` (the next lock restarts the clock, so unlocking cannot skip rest); unlocking after `min_rest_duration` calls `leave_rest()`, which also tears down any leftover overlay.
 
 ### Event-driven message pump
 - `run()` (main thread) registers a hidden window (`win32gui.CreateWindow`), calls `win32ts.WTSRegisterSessionNotification`, then loops `win32gui.PumpWaitingMessages()` + `time.sleep(0.1)`. This single pump drives **both** the hidden window and the prompt window.
@@ -84,8 +86,8 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 - Input blocking: `SetWindowsHookExW(WH_KEYBOARD_LL)` swallows every key while `overlay_active`; uninstalled by `_teardown_overlay`. The hook dies with the process, so a crash cannot leave the user locked out. `Ctrl+Alt+Del` is a system secure sequence and is always available as the escape hatch.
 - The mouse is not hooked: the full-screen window naturally receives clicks; the release label is hit-tested in `WM_LBUTTONDOWN/UP` (with `SetCapture`).
 - Window classes set an explicit `IDC_ARROW` cursor and `WM_SETCURSOR` always returns a cursor for the client area — otherwise the window inherits the shell's “app starting” hourglass.
-- A manual Win+L during the overlay tears it down and hands over to the lock-based rest path.
-- `_teardown_overlay()` is idempotent: cancels the rest timer, unhooks, destroys windows, clears hover/pressed state, releases the two overlay fonts.
+- A manual Win+L during the overlay switches the session's blocker to `lock` (the overlay is torn down, `rest_started_at` is preserved, so the rest is continuous).
+- `_teardown_overlay()` is idempotent and **UI-only** (it does not change `state`): cancels the rest timer, unhooks, destroys windows, clears hover/pressed state, releases the two overlay fonts. State transitions are owned by `enter_rest()` / `leave_rest()`.
 
 ### Rest enforcement (core, preserved)
 - `on_unlock`: if `is_resting` and `lock_time`, compare `time.time() - lock_time` to `min_rest_duration`. Below → re-lock in 1 s (a daemon `Timer`); at/above → clear resting, reset `postpone_count` **and `dnd_mode`**, `start_work_timer()`.

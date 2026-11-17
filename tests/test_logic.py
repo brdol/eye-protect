@@ -4,7 +4,8 @@ import sys
 import time
 import threading
 from _bootstrap import *
-from eye_protect import EyeProtector
+from eye_protect import (EyeProtector, STATE_WORKING, STATE_RESTING,
+                         BLOCKER_LOCK, BLOCKER_OVERLAY)
 
 
 def test_work_timer():
@@ -34,64 +35,60 @@ def test_work_timer():
     print("  [OK] 测试1通过\n")
 
 
+def _fresh():
+    p = EyeProtector()
+    p.lock_screen = lambda: None
+    p.show_overlay = lambda: None
+    return p
+
+
 def test_rest_logic():
-    """测试休息逻辑"""
-    print("测试2: 休息时间检查逻辑")
+    """测试休息判定（锁屏 blocker）"""
+    print("测试2: 休息时间判定逻辑")
 
-    protector = EyeProtector()
+    # 场景1：强制休息中立即解锁 → 保持休息并安排重锁
+    p = _fresh()
+    p.enter_rest(BLOCKER_LOCK)
+    p.on_unlock()
+    assert p.is_resting, "休息不足时应保持休息"
+    assert p.rest_started_at is None, "应清空计时等待重新锁屏"
+    print("  [OK] 休息不足：保持休息并安排重新锁屏")
+    time.sleep(1.2)  # 等重锁定时器（已打桩）
 
-    # 模拟强制锁屏休息
-    protector.is_resting = True
-    protector.lock_time = time.time()
-    print("  [OK] 模拟进入休息状态")
-
-    # 模拟立即解锁（休息时间不足）
-    time.sleep(0.5)
-    current_time = time.time()
-    rest_duration = current_time - protector.lock_time
-
-    if rest_duration < protector.min_rest_duration:
-        print(f"  [OK] 检测到休息时间不足: {rest_duration:.1f}秒 < {protector.min_rest_duration}秒")
-        print("  [OK] 应该重新锁屏")
-    else:
-        print(f"  [FAIL] 逻辑错误: {rest_duration:.1f}秒")
-
-    # 模拟休息时间达标（休息时间应明确超过最短休息时长）
-    protector.lock_time = time.time() - (protector.min_rest_duration + 10)
-    current_time = time.time()
-    rest_duration = current_time - protector.lock_time
-
-    if rest_duration >= protector.min_rest_duration:
-        print(f"  [OK] 检测到休息时间达标: {rest_duration:.1f}秒 >= {protector.min_rest_duration}秒")
-        print("  [OK] 可以继续工作")
-    else:
-        print(f"  [FAIL] 逻辑错误: {rest_duration:.1f}秒")
+    # 场景2：休息足够 → 结束休息
+    p2 = _fresh()
+    p2.enter_rest(BLOCKER_LOCK)
+    p2.rest_started_at = time.time() - (p2.min_rest_duration + 10)
+    p2.on_unlock()
+    assert not p2.is_resting, "休息足够后应结束休息"
+    if p2.work_timer:
+        p2.work_timer.cancel()
+    print("  [OK] 休息足够：结束休息并回到工作计时")
 
     print("  [OK] 测试2通过\n")
 
 
 def test_state_transitions():
-    """测试状态转换"""
+    """测试统一状态机"""
     print("测试3: 状态转换逻辑")
 
-    protector = EyeProtector()
-
-    # 初始状态
-    assert not protector.is_resting, "初始状态应该不是休息状态"
+    p = _fresh()
+    assert p.state == STATE_WORKING and not p.is_resting, "初始应为工作状态"
     print("  [OK] 初始状态正确")
 
-    # 进入休息状态
-    protector.is_resting = True
-    protector.lock_time = time.time()
-    assert protector.is_resting, "应该处于休息状态"
-    print("  [OK] 进入休息状态")
+    p.enter_rest(BLOCKER_OVERLAY)
+    assert p.state == STATE_RESTING, "应进入休息状态"
+    assert p.rest_blocker == BLOCKER_OVERLAY, "blocker 应为遮罩"
+    assert p.overlay_active, "遮罩应处于活动状态"
+    print("  [OK] 进入休息（遮罩）")
 
-    # 退出休息状态
-    protector.is_resting = False
-    protector.lock_time = None
-    assert not protector.is_resting, "应该退出休息状态"
-    assert protector.lock_time is None, "锁屏时间应该被清空"
-    print("  [OK] 退出休息状态")
+    p.leave_rest()
+    assert p.state == STATE_WORKING, "应回到工作状态"
+    assert p.rest_blocker is None and p.rest_started_at is None, "休息字段应清空"
+    assert not p.overlay_active
+    if p.work_timer:
+        p.work_timer.cancel()
+    print("  [OK] 退出休息，字段已清空")
 
     print("  [OK] 测试3通过\n")
 

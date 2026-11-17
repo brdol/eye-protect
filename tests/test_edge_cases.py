@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 from _bootstrap import *
-from eye_protect import EyeProtector
+from eye_protect import EyeProtector, BLOCKER_OVERLAY
 
 
 def test_config_validation():
@@ -143,16 +143,15 @@ def test_edge_cases():
     print("测试7: 边界情况处理")
 
     protector = EyeProtector()
+    protector.lock_screen = lambda: None
+    protector.show_overlay = lambda: None
 
-    # 测试1: 锁屏时间为None
-    protector.lock_time = None
-    protector.is_resting = True
-    # 这种情况下解锁不应该崩溃
+    # 测试1: 休息计时为空（异常状态）时解锁不应崩溃
     try:
-        # 模拟解锁时lock_time为None的情况
-        if protector.is_resting and protector.lock_time:
-            pass  # 正常流程
-        print("  [OK] 处理lock_time为None的情况")
+        protector.enter_rest(BLOCKER_OVERLAY)
+        protector.rest_started_at = None
+        protector.on_unlock()
+        print("  [OK] 处理 rest_started_at 为 None 的情况")
     except Exception as e:
         print(f"  [FAIL] 异常: {e}")
 
@@ -165,7 +164,7 @@ def test_edge_cases():
 
     # 测试3: 极短的休息时间（边界值）
     protector.min_rest_duration = 1
-    protector.lock_time = protector.lock_time or 0
+    protector.rest_started_at = protector.rest_started_at or 0
     # 应该能正常比较
     print("  [OK] 极短休息时间处理正常")
 

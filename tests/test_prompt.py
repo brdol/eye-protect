@@ -8,7 +8,9 @@ import sys
 import time
 
 from _bootstrap import *
-from eye_protect import EyeProtector, WM_APP_PROMPT, WM_APP_HARD_LOCK
+from eye_protect import (EyeProtector, WM_APP_PROMPT, WM_APP_HARD_LOCK,
+                         STATE_WORKING, STATE_PROMPTING, STATE_RESTING,
+                         BLOCKER_LOCK, BLOCKER_OVERLAY)
 
 
 def new_protector():
@@ -36,14 +38,14 @@ def cleanup(p):
 def test_postpone_under_cap():
     print("测试1: 推迟未达上限（非免打扰）")
     p = new_protector()
-    p.prompt_active = True
+    p.state = STATE_PROMPTING
     try:
         p.on_prompt_postpone()
         assert p.postpone_count == 1, f"postpone_count 应为1，实际{p.postpone_count}"
         assert not p.is_resting, "不应进入休息"
         assert p.work_timer is not None, "应启动推迟计时器"
         assert p.work_timer.interval == p.postpone_minutes * 60, "推迟计时器时长错误"
-        assert not p.prompt_active, "提示应已关闭"
+        assert p.state != STATE_PROMPTING, "提示应已关闭"
         print("  [OK] 推迟成功，启动推迟计时器")
         print("  [OK] 测试1通过\n")
     finally:
@@ -53,12 +55,12 @@ def test_postpone_under_cap():
 def test_postpone_at_cap():
     print("测试2: 推迟已达上限（非免打扰）→ 强制锁屏")
     p = new_protector()
-    p.prompt_active = True
+    p.state = STATE_PROMPTING
     p.postpone_count = p.max_postpones
     try:
         p.on_prompt_postpone()
         assert p.is_resting, "应进入休息（强制锁屏）"
-        assert not p.prompt_active, "提示应已关闭"
+        assert p.state != STATE_PROMPTING, "提示应已关闭"
         print("  [OK] 达上限后强制锁屏")
         print("  [OK] 测试2通过\n")
     finally:
@@ -68,7 +70,7 @@ def test_postpone_at_cap():
 def test_postpone_at_cap_when_dnd():
     print("测试3: 免打扰 + 达上限 → 不锁屏，继续延后")
     p = new_protector()
-    p.prompt_active = True
+    p.state = STATE_PROMPTING
     p.dnd_mode = True
     p.postpone_count = p.max_postpones
     try:
@@ -86,11 +88,11 @@ def test_postpone_at_cap_when_dnd():
 def test_grace_timeout_locks_when_not_dnd():
     print("测试4: 宽限期满（非免打扰）→ 强制锁屏")
     p = new_protector()
-    p.prompt_active = True
+    p.state = STATE_PROMPTING
     try:
         p.on_grace_timeout()
         assert p.is_resting, "非免打扰时宽限超时应锁屏"
-        assert not p.prompt_active, "提示应已关闭"
+        assert p.state != STATE_PROMPTING, "提示应已关闭"
         print("  [OK] 宽限超时触发锁屏")
         print("  [OK] 测试4通过\n")
     finally:
@@ -100,12 +102,12 @@ def test_grace_timeout_locks_when_not_dnd():
 def test_grace_timeout_skips_when_dnd():
     print("测试5: 宽限期满（免打扰）→ 跳过，不锁屏")
     p = new_protector()
-    p.prompt_active = True
+    p.state = STATE_PROMPTING
     p.dnd_mode = True
     try:
         p.on_grace_timeout()
         assert not p.is_resting, "免打扰时不应锁屏"
-        assert not p.prompt_active, "提示应已关闭"
+        assert p.state != STATE_PROMPTING, "提示应已关闭"
         assert p.work_timer is not None, "应启动推迟计时器"
         assert p.postpone_count == 0, "免打扰时不应增加推迟计数"
         print("  [OK] 免打扰跳过本轮")
@@ -117,11 +119,11 @@ def test_grace_timeout_skips_when_dnd():
 def test_grace_timeout_noop_when_idle():
     print("测试6: 非提示时宽限期满为空操作")
     p = new_protector()
-    p.prompt_active = False
+    p.state = STATE_WORKING
     try:
         p.on_grace_timeout()
         assert not p.is_resting, "不应进入休息"
-        assert not p.prompt_active, "提示状态不变"
+        assert p.state != STATE_PROMPTING, "提示状态不变"
         print("  [OK] 非提示时为空操作")
         print("  [OK] 测试6通过\n")
     finally:
@@ -131,8 +133,10 @@ def test_grace_timeout_noop_when_idle():
 def test_sufficient_rest_resets_state():
     print("测试7: 休息达标重置推迟计数与免打扰")
     p = new_protector()
-    p.is_resting = True
-    p.lock_time = time.time() - (p.min_rest_duration + 10)
+    p.state = STATE_RESTING
+    p.rest_blocker = BLOCKER_LOCK
+    p.rest_enforced = True
+    p.rest_started_at = time.time() - (p.min_rest_duration + 10)
     p.postpone_count = 2
     p.dnd_mode = True
     try:
@@ -151,8 +155,10 @@ def test_sufficient_rest_resets_state():
 def test_insufficient_rest_keeps_state():
     print("测试8: 休息不足保持推迟计数")
     p = new_protector()
-    p.is_resting = True
-    p.lock_time = time.time()
+    p.state = STATE_RESTING
+    p.rest_blocker = BLOCKER_LOCK
+    p.rest_enforced = True
+    p.rest_started_at = time.time()
     p.postpone_count = 2
     try:
         p.on_unlock()
@@ -181,13 +187,12 @@ def test_route_work_timeout():
 def test_manual_lock_during_prompt():
     print("测试10: 提示期间手动锁屏 → 进入休息")
     p = new_protector()
-    p.prompt_active = True
-    p.lock_time = None
+    p.state = STATE_PROMPTING
     try:
         p.on_lock()
-        assert not p.prompt_active, "提示应已关闭"
-        assert p.is_resting, "应进入休息"
-        assert p.lock_time is not None, "应记录锁屏时间"
+        assert p.state == STATE_RESTING, "应进入休息"
+        assert p.rest_blocker == BLOCKER_LOCK, "blocker 应为锁屏"
+        assert p.rest_started_at is not None, "应记录休息开始时间"
         print("  [OK] 提示期间锁屏，关闭提示并进入休息")
         print("  [OK] 测试10通过\n")
     finally:
@@ -294,9 +299,11 @@ def test_overlay_release_resets_state():
     print("测试17: 结束休息后状态复位")
     p = new_protector()
     p.rest_style = "overlay"
-    p.overlay_active = True
-    p._rest_start = time.time() - (p.min_rest_duration + 5)
-    p.is_resting = True
+    p.state = STATE_RESTING
+    p.rest_blocker = BLOCKER_OVERLAY
+    p.rest_enforced = True
+    p.rest_started_at = time.time() - (p.min_rest_duration + 5)
+    p._rest_ready = True
     p.postpone_count = 2
     p.dnd_mode = True
     try:
@@ -321,6 +328,88 @@ def test_rest_messages_default_and_pick():
         assert p._pick_rest_message() in p.rest_messages, "随机结果必须来自列表"
     print(f"  [OK] {len(p.rest_messages)} 条文案，随机选择均来自列表")
     print("  [OK] 测试18通过\n")
+
+
+def test_stale_prompt_ignored_when_not_working():
+    print("测试19: 非工作状态的迟到提示被忽略")
+    p = new_protector()
+    p.state = STATE_RESTING
+    p.rest_blocker = BLOCKER_OVERLAY
+    p.rest_started_at = time.time()
+    try:
+        p.show_prompt()
+        assert p.state == STATE_RESTING, "状态不应被改变"
+        assert p.prompt_hwnd is None, "不应创建提示窗口"
+        print("  [OK] 休息中收到迟到的提示消息 → 忽略")
+        print("  [OK] 测试19通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_lock_during_overlay_switches_blocker():
+    print("测试20: 遮罩期间锁屏 → 切换 blocker，休息不重新计时")
+    p = new_protector()
+    p.enter_rest(BLOCKER_OVERLAY)
+    started = p.rest_started_at
+    try:
+        p.on_lock()
+        assert p.state == STATE_RESTING, "应仍在休息"
+        assert p.rest_blocker == BLOCKER_LOCK, "blocker 应切换为锁屏"
+        assert p.rest_started_at == started, "连续休息不应重新计时"
+        print("  [OK] blocker 切换为锁屏，计时保持连续")
+        print("  [OK] 测试20通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_unlock_after_rest_leaves_rest_cleanly():
+    print("测试21: 锁屏休息足够后解锁 → 干净离开休息（含残留遮罩清理）")
+    p = new_protector()
+    p.enter_rest(BLOCKER_LOCK)
+    p.rest_started_at = time.time() - (p.min_rest_duration + 10)
+    p._rest_ready = True  # 模拟可能残留的遮罩 UI 状态
+    try:
+        p.on_unlock()
+        assert p.state == STATE_WORKING, "应回到工作状态"
+        assert not p.overlay_active, "遮罩应被清理"
+        assert p.work_timer is not None, "应重新开始工作计时"
+        print("  [OK] 解锁后状态干净，无残留 UI")
+        print("  [OK] 测试21通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_voluntary_lock_does_not_enforce_min_rest():
+    print("测试22: 工作中自愿锁屏 → 不强制最短休息")
+    p = new_protector()
+    p.start_work_timer()
+    try:
+        p.on_lock()
+        assert p.state == STATE_RESTING, "应记录为休息"
+        assert p.rest_enforced is False, "自愿锁屏不应强制执行最短休息"
+        p.on_unlock()
+        assert p.state == STATE_WORKING, "立即解锁应直接恢复工作"
+        assert p.work_timer is not None
+        print("  [OK] 自愿锁屏只暂停，不强制执行最短休息")
+        print("  [OK] 测试22通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_early_unlock_restarts_rest_clock():
+    print("测试23: 强制休息中提前解锁 → 重新计时")
+    p = new_protector()
+    p.enter_rest(BLOCKER_LOCK)
+    p.rest_started_at = time.time()
+    try:
+        p.on_unlock()
+        assert p.state == STATE_RESTING, "休息不足应保持休息"
+        assert p.rest_started_at is None, "应由下一次锁屏重新开始计时"
+        print("  [OK] 提前解锁不累计，重新计时")
+        print("  [OK] 测试23通过\n")
+    finally:
+        cleanup(p)
+    time.sleep(1.2)
 
 
 if __name__ == "__main__":
@@ -348,6 +437,11 @@ if __name__ == "__main__":
         test_enter_rest_lock_style_locks()
         test_overlay_release_resets_state()
         test_rest_messages_default_and_pick()
+        test_stale_prompt_ignored_when_not_working()
+        test_lock_during_overlay_switches_blocker()
+        test_unlock_after_rest_leaves_rest_cleanly()
+        test_voluntary_lock_does_not_enforce_min_rest()
+        test_early_unlock_restarts_rest_clock()
 
         print("=" * 50)
         print("所有软提示测试通过！")
