@@ -15,6 +15,8 @@ def new_protector():
     """新建实例并打桩 lock_screen，避免真实锁屏。显式设定可配置项，保证测试与 config.json 当前值无关。"""
     p = EyeProtector()
     p.lock_screen = lambda: None
+    # 默认不打桩 show_overlay 会导致测试真的弹出全屏遮罩并安装键盘钩子
+    p.show_overlay = lambda: None
     p.grace_seconds = 60
     p.postpone_minutes = 5
     p.max_postpones = 3
@@ -244,6 +246,83 @@ def test_font_uses_raw_ppi():
     print("  [OK] 测试13通过\n")
 
 
+def test_rest_style_defaults_to_overlay():
+    print("测试14: rest_style 默认值")
+    p = new_protector()
+    assert p.rest_style in ("overlay", "lock"), f"rest_style 非法: {p.rest_style}"
+    assert p.rest_style == "overlay", f"默认应为 overlay，实际 {p.rest_style}"
+    print("  [OK] 默认 overlay")
+    print("  [OK] 测试14通过\n")
+
+
+def test_enter_rest_overlay_does_not_lock():
+    print("测试15: overlay 模式休息不锁屏")
+    p = new_protector()
+    called = {"lock": 0, "overlay": 0}
+    p.lock_screen = lambda: called.__setitem__("lock", called["lock"] + 1)
+    p.show_overlay = lambda: called.__setitem__("overlay", called["overlay"] + 1)
+    p.rest_style = "overlay"
+    try:
+        p.enter_rest()
+        assert p.is_resting, "应进入休息"
+        assert called["overlay"] == 1, "应显示遮罩"
+        assert called["lock"] == 0, "不应锁屏"
+        print("  [OK] 进入休息时只显示遮罩，未调用 LockWorkStation")
+        print("  [OK] 测试15通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_enter_rest_lock_style_locks():
+    print("测试16: lock 模式休息仍锁屏")
+    p = new_protector()
+    called = {"lock": 0, "overlay": 0}
+    p.lock_screen = lambda: called.__setitem__("lock", called["lock"] + 1)
+    p.show_overlay = lambda: called.__setitem__("overlay", called["overlay"] + 1)
+    p.rest_style = "lock"
+    try:
+        p.enter_rest()
+        assert p.is_resting
+        assert called["lock"] == 1 and called["overlay"] == 0
+        print("  [OK] lock 模式仍调用锁屏，未显示遮罩")
+        print("  [OK] 测试16通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_overlay_release_resets_state():
+    print("测试17: 结束休息后状态复位")
+    p = new_protector()
+    p.rest_style = "overlay"
+    p.overlay_active = True
+    p._rest_start = time.time() - (p.min_rest_duration + 5)
+    p.is_resting = True
+    p.postpone_count = 2
+    p.dnd_mode = True
+    try:
+        p.on_overlay_release()
+        assert not p.is_resting, "应退出休息"
+        assert not p.overlay_active, "遮罩应关闭"
+        assert p.postpone_count == 0, "推迟计数应重置"
+        assert p.dnd_mode is False, "免打扰应重置"
+        assert p.work_timer is not None, "应重新开始工作计时"
+        print("  [OK] 遮罩释放后状态复位并重启工作计时")
+        print("  [OK] 测试17通过\n")
+    finally:
+        cleanup(p)
+
+
+def test_rest_messages_default_and_pick():
+    print("测试18: 遮罩文案列表与随机选择")
+    p = new_protector()
+    assert isinstance(p.rest_messages, list) and p.rest_messages, "默认文案列表不应为空"
+    assert all(isinstance(m, str) and m.strip() for m in p.rest_messages), "文案应为非空字符串"
+    for _ in range(30):
+        assert p._pick_rest_message() in p.rest_messages, "随机结果必须来自列表"
+    print(f"  [OK] {len(p.rest_messages)} 条文案，随机选择均来自列表")
+    print("  [OK] 测试18通过\n")
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("软提示状态逻辑与布局测试")
@@ -264,6 +343,11 @@ if __name__ == "__main__":
         test_layout_controls_within_client()
         test_larger_font_grows_window()
         test_font_uses_raw_ppi()
+        test_rest_style_defaults_to_overlay()
+        test_enter_rest_overlay_does_not_lock()
+        test_enter_rest_lock_style_locks()
+        test_overlay_release_resets_state()
+        test_rest_messages_default_and_pick()
 
         print("=" * 50)
         print("所有软提示测试通过！")

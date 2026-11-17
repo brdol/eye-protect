@@ -2,6 +2,7 @@ import ctypes
 import json
 import logging
 import os
+import random
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ WTS_SESSION_UNLOCK = 0x8
 WM_APP_PROMPT = win32con.WM_APP + 1         # 显示休息提示（软提示模式）
 WM_APP_HARD_LOCK = win32con.WM_APP + 2      # 直接锁屏（硬锁模式）
 WM_APP_GRACE_EXPIRED = win32con.WM_APP + 3  # 宽限期满（工作线程通知主线程）
+WM_APP_REST_READY = win32con.WM_APP + 4     # 最短休息已满，遮罩上可以出现“结束休息”按钮
 
 # win32con 未导出 WM_DPICHANGED，手动定义（0x02E0）
 WM_DPICHANGED = 0x02E0
@@ -33,7 +35,12 @@ WM_DISPLAYCHANGE = 0x007E
 IDB_SLEEP = 101         # 立即休息
 IDB_POSTPONE = 102      # 推迟N分钟
 IDC_DND = 103           # 免打扰复选框
+IDC_REST_DONE = 104     # 遮罩上的“结束休息”按钮
 IDT_PROMPT_TICK = 1     # 倒计时 SetTimer 标识（仅用于刷新显示）
+
+# 低级键盘钩子：遮罩期间吞掉所有按键（Ctrl+Alt+Del 是系统安全序列，无法拦截）
+WH_KEYBOARD_LL = 13
+IDC_HAND = 32649
 
 # 置顶但不抢键盘焦点
 WS_EX_NOACTIVATE = getattr(win32con, "WS_EX_NOACTIVATE", 0x08000000)
@@ -52,6 +59,31 @@ PROMPT_TITLE = "护眼休息提醒"
 PROMPT_MESSAGE = "该休息了"
 PROMPT_DND = "免打扰"
 PROMPT_SLEEP = "休息"
+
+# 全屏休息遮罩
+OVERLAY_TEXT = "休息中"
+OVERLAY_BUTTON = "结束休息"
+
+# 遮罩文案默认列表：简洁、平静，不做可爱风；可在 config.json 的 rest_messages 中覆盖
+DEFAULT_REST_MESSAGES = (
+    "起来走走吧",
+    "喝口水吧",
+    "看看远处",
+    "让眼睛歇一会儿",
+    "站起来活动一下",
+    "望望窗外吧",
+    "闭眼放松一下",
+    "慢慢呼吸",
+)
+OVERLAY_BG_TOP = (0x0E, 0x11, 0x16)        # 极暗冷色渐变起点（8-bit RGB）
+OVERLAY_BG_BOTTOM = (0x05, 0x07, 0x0A)     # 渐变终点
+OVERLAY_TEXT_COLOR = 0x00BFB09F            # COLORREF，对应 RGB(0x9F, 0xB0, 0xBF)
+# “结束休息”只画文字，不画任何形状
+OVERLAY_BTN_TEXT = 0x00998C7E              # RGB(0x7E, 0x8C, 0x99) 默认偏暗
+OVERLAY_BTN_TEXT_HOVER = 0x00DED3C7        # RGB(0xC7, 0xD3, 0xDE) 悬停提亮
+OVERLAY_BTN_TEXT_PRESSED = 0x00BFB09F      # RGB(0x9F, 0xB0, 0xBF) 按下
+OVERLAY_BTN_UNDERLINE = 0x0074685A         # RGB(0x5A, 0x68, 0x74) 常显下划线
+OVERLAY_BTN_UNDERLINE_HOVER = 0x00DED3C7   # 悬停时下划线随文字提亮
 
 # 字号换算优先使用显示器的“真实 PPI”（RAW DPI），而不是含用户缩放的有效 DPI，
 # 这样同一字号在任何缩放下物理大小一致。超出 60~400 PPI 视为 EDID 不可信，退回有效 DPI。
@@ -85,6 +117,24 @@ class _MINMAXINFO(ctypes.Structure):
     _fields_ = [("ptReserved", _POINTL), ("ptMaxSize", _POINTL),
                 ("ptMaxPosition", _POINTL), ("ptMinTrackSize", _POINTL),
                 ("ptMaxTrackSize", _POINTL)]
+
+
+class _TRIVERTEX(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long),
+                ("Red", ctypes.c_ushort), ("Green", ctypes.c_ushort),
+                ("Blue", ctypes.c_ushort), ("Alpha", ctypes.c_ushort)]
+
+
+class _GRADIENT_RECT(ctypes.Structure):
+    _fields_ = [("UpperLeft", ctypes.c_ulong), ("LowerRight", ctypes.c_ulong)]
+
+
+class _DRAWITEMSTRUCT(ctypes.Structure):
+    _fields_ = [("CtlType", ctypes.c_uint), ("CtlID", ctypes.c_uint),
+                ("itemID", ctypes.c_uint), ("itemAction", ctypes.c_uint),
+                ("itemState", ctypes.c_uint), ("hwndItem", ctypes.c_void_p),
+                ("hDC", ctypes.c_void_p), ("rcItem", _RECT),
+                ("itemData", ctypes.c_void_p)]
 
 
 class EyeProtector:
@@ -123,6 +173,22 @@ class EyeProtector:
         self._prompt_font_owned = False
         self._prompt_font_dpi = 96
         self._prompt_eff_dpi = 96
+        # 全屏休息遮罩状态（仅在主线程修改）
+        self.overlays = []
+        self.overlay_active = False
+        self._rest_ready = False
+        self._hover_hwnd = None
+        self._pressed_hwnd = None
+        self._rest_message = OVERLAY_TEXT
+        self._rest_start = None
+        self._rest_timer = None
+        self._overlay_wc = None
+        self._overlay_proc_ref = None
+        self._overlay_atom = None
+        self._overlay_font = None
+        self._overlay_btn_font = None
+        self._kbd_hook = None
+        self._kbd_proc = None
         self._gdi_setup = False
         self._heartbeat = time.time()
         self._exiting = False
@@ -195,6 +261,21 @@ class EyeProtector:
         if self.prompt_position not in ("center", "top-left", "top-right", "bottom-left", "bottom-right", "top-center"):
             self.prompt_position = "top-right"
 
+        # 休息的实施方式：overlay=全屏遮罩（默认，不锁屏）；lock=锁屏
+        self.rest_style = str(config.get("rest_style", "overlay")).lower()
+        if self.rest_style not in ("overlay", "lock"):
+            self.rest_style = "overlay"
+
+        # 遮罩文案列表：每次休息随机取一条；非法/为空时回退到默认列表
+        raw_msgs = config.get("rest_messages", None)
+        msgs = []
+        if isinstance(raw_msgs, list):
+            for m in raw_msgs:
+                text = str(m).strip()
+                if text:
+                    msgs.append(text)
+        self.rest_messages = msgs or list(DEFAULT_REST_MESSAGES)
+
     def setup_logging(self):
         Path(self.log_dir).mkdir(exist_ok=True)
         log_file = os.path.join(self.log_dir, f"eye_protect_{datetime.now().strftime('%Y%m%d')}.log")
@@ -241,10 +322,380 @@ class EyeProtector:
         win32api.PostMessage(self.hwnd, self._route_work_timeout(), 0, 0)
 
     def enter_rest(self):
-        """进入休息：标记状态并锁屏。仅在主线程调用。"""
+        """进入休息。rest_style=overlay 时显示全屏遮罩（不锁屏），否则锁屏。仅在主线程调用。"""
         self.is_resting = True
-        self.logger.info("进入休息，执行锁屏")
-        self.lock_screen()
+        if self.rest_style == "overlay":
+            self.show_overlay()
+        else:
+            self.logger.info("进入休息，执行锁屏")
+            self.lock_screen()
+
+    # ---------- 全屏休息遮罩 ----------
+
+    def _enum_monitors(self):
+        """返回每个显示器的完整矩形 [(x, y, w, h), ...]（含任务栏区域）。"""
+        u = ctypes.windll.user32
+        result = []
+        MONITORENUMPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.POINTER(_RECT), ctypes.c_ssize_t)
+
+        def _cb(hmon, hdc, lprc, data):
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            if u.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                r = mi.rcMonitor
+                result.append((r.left, r.top, r.right - r.left, r.bottom - r.top))
+            return True
+
+        proc = MONITORENUMPROC(_cb)
+        u.EnumDisplayMonitors(None, None, proc, 0)
+        if not result:
+            result.append((0, 0, win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)))
+        return result
+
+    def _measure_with_font(self, hfont, text):
+        if not hfont:
+            return 1, 1
+        self._setup_gdi()
+        u = ctypes.windll.user32
+        g = ctypes.windll.gdi32
+        hdc = u.GetDC(None)
+        size = _SIZE(0, 0)
+        try:
+            old = g.SelectObject(hdc, ctypes.c_void_p(hfont))
+            g.GetTextExtentPoint32W(hdc, text, len(text), ctypes.byref(size))
+            if old:
+                g.SelectObject(hdc, old)
+        finally:
+            u.ReleaseDC(None, hdc)
+        return max(1, size.cx), max(1, size.cy)
+
+    def _ensure_overlay_fonts(self, dpi):
+        if self._overlay_font:
+            return
+        self._setup_gdi()
+        g = ctypes.windll.gdi32
+        base = self._font_px(dpi)
+        big = g.CreateFontW(-max(1, base * 2), 0, 0, 0, 400, 0, 0, 0, 1,
+                            0, 0, 0, 0, "Microsoft YaHei") & 0xFFFFFFFF
+        btn = g.CreateFontW(-max(1, (base * 4) // 3), 0, 0, 0, 400, 0, 0, 0, 1,
+                            0, 0, 0, 0, "Microsoft YaHei") & 0xFFFFFFFF
+        self._overlay_font = big or None
+        self._overlay_btn_font = btn or None
+
+    def _release_overlay_fonts(self):
+        g = ctypes.windll.gdi32
+        for h in (self._overlay_font, self._overlay_btn_font):
+            if h:
+                try:
+                    g.DeleteObject(ctypes.c_void_p(h))
+                except Exception:
+                    pass
+        self._overlay_font = None
+        self._overlay_btn_font = None
+
+    def _pick_rest_message(self):
+        """从配置的文案列表中随机取一条。"""
+        if not self.rest_messages:
+            return OVERLAY_TEXT
+        return random.choice(self.rest_messages)
+
+    def _rest_button_size(self):
+        tw, th = self._measure_with_font(self._overlay_btn_font, OVERLAY_BUTTON)
+        px = max(36, (th * 5) // 2)     # 横向留白更足，胶囊更舒展
+        py = max(14, th // 2 + 4)
+        return (tw + 2 * px, th + 2 * py)
+
+    def _overlay_layout(self, cw, ch):
+        """返回（文字矩形, 按钮矩形）。文字在 40% 高度，按钮下移到 75% 高度。"""
+        tw, th = self._measure_with_font(self._overlay_font, self._rest_message)
+        text_y = int(ch * 0.40) - th // 2
+        text_rect = ((cw - tw) // 2, text_y, tw, th)
+        bw, bh = self._rest_button_size()
+        btn_y = int(ch * 0.75) - bh // 2
+        btn_rect = ((cw - bw) // 2, btn_y, bw, bh)
+        return text_rect, btn_rect
+
+    def _fill_gradient(self, hdc, cw, ch):
+        if cw <= 0 or ch <= 0:
+            return
+        verts = (_TRIVERTEX * 2)()
+        top, bottom = OVERLAY_BG_TOP, OVERLAY_BG_BOTTOM
+        verts[0].x, verts[0].y = 0, 0
+        verts[0].Red, verts[0].Green, verts[0].Blue = (top[0] * 257, top[1] * 257, top[2] * 257)
+        verts[0].Alpha = 0
+        verts[1].x, verts[1].y = cw, ch
+        verts[1].Red, verts[1].Green, verts[1].Blue = (bottom[0] * 257, bottom[1] * 257, bottom[2] * 257)
+        verts[1].Alpha = 0
+        rect = _GRADIENT_RECT(0, 1)
+        ctypes.windll.msimg32.GradientFill(hdc, verts, 2, ctypes.byref(rect), 1, 0)
+
+    def _draw_rest_label(self, hdc, rect, pressed, hover):
+        """只画文字：默认偏暗，悬停提亮并加一条细下划线，按下变暗。"""
+        if not self._overlay_btn_font:
+            return
+        g = ctypes.windll.gdi32
+        u = ctypes.windll.user32
+        if pressed:
+            color = OVERLAY_BTN_TEXT_PRESSED
+        elif hover:
+            color = OVERLAY_BTN_TEXT_HOVER
+        else:
+            color = OVERLAY_BTN_TEXT
+        g.SetBkMode(hdc, 1)
+        g.SetTextColor(hdc, color)
+        old = g.SelectObject(hdc, ctypes.c_void_p(self._overlay_btn_font))
+        r = _RECT(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+        u.DrawTextW(hdc, OVERLAY_BUTTON, -1, ctypes.byref(r),
+                    win32con.DT_CENTER | win32con.DT_VCENTER | win32con.DT_SINGLELINE)
+        if old:
+            g.SelectObject(hdc, old)
+        # 下划线常显（悬停时与文字一起提亮），让“这是可点的”更明显
+        tw, th = self._measure_with_font(self._overlay_btn_font, OVERLAY_BUTTON)
+        cx = rect[0] + rect[2] // 2
+        ty = rect[1] + (rect[3] - th) // 2
+        line = _RECT(cx - tw // 2, ty + th + 5, cx + tw // 2, ty + th + 6)
+        color = OVERLAY_BTN_UNDERLINE_HOVER if (hover and not pressed) else OVERLAY_BTN_UNDERLINE
+        brush = g.CreateSolidBrush(color)
+        try:
+            u.FillRect(hdc, ctypes.byref(line), ctypes.c_void_p(brush))
+        finally:
+            g.DeleteObject(ctypes.c_void_p(brush))
+
+    def _paint_overlay(self, hwnd):
+        hdc, ps = win32gui.BeginPaint(hwnd)
+        try:
+            cr = win32gui.GetClientRect(hwnd)
+            cw, ch = cr[2], cr[3]
+            self._fill_gradient(hdc, cw, ch)
+            g = ctypes.windll.gdi32
+            u = ctypes.windll.user32
+            g.SetBkMode(hdc, 1)
+            text_rect, btn_rect = self._overlay_layout(cw, ch)
+
+            if self._overlay_font:
+                g.SetTextColor(hdc, OVERLAY_TEXT_COLOR)
+                old = g.SelectObject(hdc, ctypes.c_void_p(self._overlay_font))
+                r = _RECT(text_rect[0], text_rect[1],
+                          text_rect[0] + text_rect[2], text_rect[1] + text_rect[3])
+                u.DrawTextW(hdc, self._rest_message, -1, ctypes.byref(r),
+                            win32con.DT_CENTER | win32con.DT_VCENTER | win32con.DT_SINGLELINE)
+                if old:
+                    g.SelectObject(hdc, old)
+
+            if self._rest_ready:
+                self._draw_rest_label(hdc, btn_rect,
+                                      self._pressed_hwnd == hwnd,
+                                      self._hover_hwnd == hwnd)
+        finally:
+            win32gui.EndPaint(hwnd, ps)
+
+    def _hit_test_button(self, hwnd, x, y):
+        cr = win32gui.GetClientRect(hwnd)
+        _, br = self._overlay_layout(cr[2], cr[3])
+        return br[0] <= x < br[0] + br[2] and br[1] <= y < br[1] + br[3]
+
+    def _install_kbd_hook(self):
+        """安装全局低级键盘钩子：遮罩期间吞掉所有按键。"""
+        if self._kbd_hook:
+            return
+        u = ctypes.windll.user32
+        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int,
+                                      ctypes.c_size_t, ctypes.c_ssize_t)
+
+        def _proc(nCode, wparam, lparam):
+            if nCode >= 0 and self.overlay_active:
+                return 1  # 吞掉按键（Ctrl+Alt+Del 由系统处理，钩子拦不到）
+            return u.CallNextHookEx(None, nCode, wparam, lparam)
+
+        self._kbd_proc = HOOKPROC(_proc)
+        u.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC,
+                                        ctypes.c_void_p, ctypes.c_uint]
+        u.SetWindowsHookExW.restype = ctypes.c_void_p
+        u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                     ctypes.c_size_t, ctypes.c_ssize_t]
+        u.CallNextHookEx.restype = ctypes.c_ssize_t
+        self._kbd_hook = u.SetWindowsHookExW(
+            WH_KEYBOARD_LL, self._kbd_proc, ctypes.c_void_p(self._hinstance), 0)
+        if not self._kbd_hook:
+            self.logger.warning("键盘钩子安装失败（遮罩仍显示，但 Alt+Tab 等可能逃逸）")
+
+    def _uninstall_kbd_hook(self):
+        if self._kbd_hook:
+            try:
+                ctypes.windll.user32.UnhookWindowsHookEx(ctypes.c_void_p(self._kbd_hook))
+            except Exception:
+                pass
+            self._kbd_hook = None
+        self._kbd_proc = None
+
+    def _fit_overlays(self):
+        monitors = self._enum_monitors()
+        for hwnd, (x, y, w, h) in zip(self.overlays, monitors):
+            try:
+                win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, x, y, w, h,
+                                      win32con.SWP_NOACTIVATE)
+            except Exception:
+                pass
+
+    def show_overlay(self):
+        """显示全屏休息遮罩（每台显示器一个窗口），不锁屏。仅在主线程调用。"""
+        if self.overlay_active:
+            return
+        self._rest_message = self._pick_rest_message()
+        _, eff_dpi, raw_dpi = self._get_target_monitor()
+        self._ensure_overlay_fonts(self._font_dpi(eff_dpi, raw_dpi))
+
+        if self._overlay_atom is None:
+            wc = win32gui.WNDCLASS()
+            wc.lpfnWndProc = self.overlay_wnd_proc
+            wc.lpszClassName = "EyeProtectorOverlayClass"
+            wc.hInstance = self._hinstance
+            wc.hbrBackground = 0  # 背景全部自绘
+            # 明确指定窗口光标，否则系统会沿用启动时的“应用启动中”漏斗光标
+            wc.hCursor = win32gui.LoadCursor(0, win32con.IDC_ARROW)
+            self._overlay_wc = wc
+            self._overlay_proc_ref = self.overlay_wnd_proc
+            self._overlay_atom = win32gui.RegisterClass(wc)
+
+        style = win32con.WS_POPUP | win32con.WS_VISIBLE
+        ex = (win32con.WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+              getattr(win32con, "WS_EX_TOOLWINDOW", 0x00000080))
+        for (x, y, w, h) in self._enum_monitors():
+            hwnd = win32gui.CreateWindowEx(
+                ex, self._overlay_atom, OVERLAY_TEXT, style, x, y, w, h,
+                0, 0, self._hinstance, None)
+            if hwnd:
+                self.overlays.append(hwnd)
+
+        self.overlay_active = True
+        self._rest_start = time.time()
+        self._rest_ready = False
+        self._hover_hwnd = None
+        self._pressed_hwnd = None
+        self._install_kbd_hook()
+        self._rest_timer = threading.Timer(self.min_rest_duration, self.on_rest_min_elapsed)
+        self._rest_timer.daemon = True
+        self._rest_timer.start()
+        self.logger.info(
+            f"进入休息：显示全屏遮罩（{len(self.overlays)} 个显示器，"
+            f"{self.min_rest_duration} 秒后出现结束按钮）")
+
+    def on_rest_min_elapsed(self):
+        """最短休息已满（工作线程）：通知主线程添加按钮。"""
+        if self.hwnd:
+            win32api.PostMessage(self.hwnd, WM_APP_REST_READY, 0, 0)
+
+    def _add_rest_buttons(self):
+        if not self.overlay_active or self._rest_ready:
+            return
+        self._rest_ready = True
+        self._hover_hwnd = None
+        self._pressed_hwnd = None
+        for hwnd in list(self.overlays):
+            try:
+                win32gui.InvalidateRect(hwnd, None, False)
+            except Exception:
+                pass
+        self.logger.info("最短休息已满，遮罩上显示“结束休息”按钮")
+
+    def on_overlay_release(self):
+        """点击“结束休息”：拆除遮罩并回到工作计时。"""
+        if not self.overlay_active:
+            return
+        rest = time.time() - (self._rest_start or time.time())
+        self.logger.info(f"用户结束休息（已休息 {rest:.0f} 秒）")
+        self._teardown_overlay()
+        self.is_resting = False
+        self.lock_time = None
+        self.postpone_count = 0
+        self.dnd_mode = False
+        self.start_work_timer()
+
+    def _teardown_overlay(self):
+        """幂等拆除遮罩：取消计时器、卸载钩子、销毁窗口、释放字体。"""
+        if not self.overlay_active and not self.overlays:
+            return
+        self.overlay_active = False
+        if self._rest_timer:
+            self._rest_timer.cancel()
+            self._rest_timer = None
+        self._uninstall_kbd_hook()
+        for hwnd in list(self.overlays):
+            try:
+                win32gui.DestroyWindow(hwnd)
+            except Exception:
+                pass
+        self.overlays = []
+        self._rest_ready = False
+        self._hover_hwnd = None
+        self._pressed_hwnd = None
+        self._release_overlay_fonts()
+
+    def overlay_wnd_proc(self, hwnd, msg, wparam, lparam):
+        """遮罩窗口过程（主线程）。"""
+        try:
+            if msg == win32con.WM_ERASEBKGND:
+                return 1  # 全部在 WM_PAINT 中绘制，避免闪烁
+            if msg == win32con.WM_PAINT:
+                self._paint_overlay(hwnd)
+                return 0
+            if msg == win32con.WM_MOUSEMOVE:
+                if self._rest_ready:
+                    x, y = win32api.LOWORD(lparam), win32api.HIWORD(lparam)
+                    inside = self._hit_test_button(hwnd, x, y)
+                    if inside and self._hover_hwnd != hwnd:
+                        self._hover_hwnd = hwnd
+                        win32gui.InvalidateRect(hwnd, None, False)
+                    elif not inside and self._hover_hwnd == hwnd:
+                        self._hover_hwnd = None
+                        win32gui.InvalidateRect(hwnd, None, False)
+                return 0
+            if msg == win32con.WM_LBUTTONDOWN:
+                if self._rest_ready:
+                    x, y = win32api.LOWORD(lparam), win32api.HIWORD(lparam)
+                    if self._hit_test_button(hwnd, x, y):
+                        self._pressed_hwnd = hwnd
+                        try:
+                            win32gui.SetCapture(hwnd)
+                        except Exception:
+                            pass
+                        win32gui.InvalidateRect(hwnd, None, False)
+                return 0
+            if msg == win32con.WM_LBUTTONUP:
+                if self._pressed_hwnd == hwnd:
+                    x, y = win32api.LOWORD(lparam), win32api.HIWORD(lparam)
+                    inside = self._hit_test_button(hwnd, x, y)
+                    self._pressed_hwnd = None
+                    try:
+                        win32gui.ReleaseCapture()
+                    except Exception:
+                        pass
+                    if inside:
+                        self.on_overlay_release()
+                    else:
+                        win32gui.InvalidateRect(hwnd, None, False)
+                return 0
+            if msg == win32con.WM_SETCURSOR:
+                if (lparam & 0xFFFF) == win32con.HTCLIENT:
+                    px, py = win32api.GetCursorPos()
+                    cx, cy = win32gui.ScreenToClient(hwnd, (px, py))
+                    if self._rest_ready and self._hit_test_button(hwnd, cx, cy):
+                        win32gui.SetCursor(win32gui.LoadCursor(0, IDC_HAND))
+                    else:
+                        win32gui.SetCursor(win32gui.LoadCursor(0, win32con.IDC_ARROW))
+                    return 1
+            if msg == WM_DISPLAYCHANGE:
+                self._fit_overlays()
+                return 0
+            if msg == win32con.WM_DESTROY:
+                if hwnd in self.overlays:
+                    self.overlays.remove(hwnd)
+                return 0
+        except Exception as e:
+            self.logger.error("overlay_wnd_proc 异常: %s", e, exc_info=True)
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
     # ---------- 提示窗口：DPI / 字体 / 度量 ----------
 
@@ -272,6 +723,25 @@ class EyeProtector:
         u.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         u.ReleaseDC.restype = ctypes.c_int
         u.GetSysColorBrush.restype = ctypes.c_void_p
+        u.DrawTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int,
+                                ctypes.POINTER(_RECT), ctypes.c_uint]
+        u.DrawTextW.restype = ctypes.c_int
+        # GradientFill 在 msimg32.dll，不在 gdi32
+        ms = ctypes.windll.msimg32
+        ms.GradientFill.argtypes = [ctypes.c_void_p, ctypes.POINTER(_TRIVERTEX),
+                                    ctypes.c_ulong, ctypes.POINTER(_GRADIENT_RECT),
+                                    ctypes.c_ulong, ctypes.c_ulong]
+        ms.GradientFill.restype = ctypes.c_bool
+        g.CreateSolidBrush.argtypes = [ctypes.c_uint]
+        g.CreateSolidBrush.restype = ctypes.c_void_p
+        g.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        g.CreatePen.restype = ctypes.c_void_p
+        g.RoundRect.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        g.RoundRect.restype = ctypes.c_bool
+        g.GetStockObject.restype = ctypes.c_void_p
+        u.FillRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT), ctypes.c_void_p]
+        u.FillRect.restype = ctypes.c_int
         self._gdi_setup = True
 
     def _monitor_info(self, hmon):
@@ -507,6 +977,7 @@ class EyeProtector:
             wc.lpszClassName = "EyeProtectorPromptClass"
             wc.hInstance = self._hinstance
             wc.hbrBackground = win32con.COLOR_BTNFACE + 1  # 系统色画刷，避免窗口背景未绘制
+            wc.hCursor = win32gui.LoadCursor(0, win32con.IDC_ARROW)
             self._prompt_wc = wc
             self._prompt_proc_ref = self.prompt_wnd_proc
             self._prompt_atom = win32gui.RegisterClass(wc)
@@ -798,6 +1269,13 @@ class EyeProtector:
         current_time = time.time()
         self.lock_time = current_time
 
+        # 遮罩期间手动锁屏：拆除遮罩，转为锁屏休息（解锁时仍按最短休息校验）
+        if self.overlay_active:
+            self._teardown_overlay()
+            self.is_resting = True
+            self.logger.info("遮罩期间手动锁屏，转入锁屏休息")
+            return
+
         # 提示期间手动锁屏：视为开始休息，并清理提示
         if self.prompt_active:
             self._teardown_prompt()
@@ -822,6 +1300,7 @@ class EyeProtector:
         if self.work_timer:
             self.work_timer.cancel()
         self._teardown_prompt()
+        self._teardown_overlay()
 
         # 发送退出消息
         if self.hwnd:
@@ -900,6 +1379,9 @@ class EyeProtector:
                 return 0
             if msg == WM_APP_GRACE_EXPIRED:
                 self.on_grace_timeout()
+                return 0
+            if msg == WM_APP_REST_READY:
+                self._add_rest_buttons()
                 return 0
         except Exception as e:
             self.logger.error("wnd_proc 异常: %s", e, exc_info=True)

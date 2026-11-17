@@ -6,6 +6,17 @@
     "grace_seconds": 60,
     "postpone_minutes": 5,
     "max_postpones": 3,
+    "rest_style": "overlay",
+    "rest_messages": [
+        "起来走走吧",
+        "喝口水吧",
+        "看看远处",
+        "让眼睛歇一会儿",
+        "站起来活动一下",
+        "望望窗外吧",
+        "闭眼放松一下",
+        "慢慢呼吸"
+    ],
     "prompt_font_size": 9,
     "prompt_position": "top-right"
 }
