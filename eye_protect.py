@@ -58,8 +58,14 @@ MONITOR_DEFAULTTONEAREST = 2
 MDT_EFFECTIVE_DPI = 0
 MDT_RAW_DPI = 2
 
-# 脚本所在目录：配置/日志按此定位，避免任务计划程序以 System32 为 CWD 时找不到/写不进
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+__version__ = "1.0.0"
+
+# 脚本/程序所在目录：配置、日志、自启动都按此定位。
+# PyInstaller frozen 模式下 __file__ 指向临时解压目录，必须改用 exe 所在目录。
+if getattr(sys, "frozen", False):
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 提示文本（布局按这些文本实测宽度）
 PROMPT_TITLE = "护眼休息提醒"
@@ -586,7 +592,10 @@ class EyeProtector:
 
     def show_overlay(self):
         """显示全屏休息遮罩（每台显示器一个窗口），不锁屏。仅在主线程调用。"""
-        if self.overlay_active:
+        # 这里必须用 UI 级守卫（是否已有窗口），不能用派生属性 overlay_active：
+        # enter_rest 会先置 state/blocker 再调用本方法，此时 overlay_active 已经为 True，
+        # 用它会把自己挡掉，导致遮罩永远不出现。
+        if self.overlays:
             return
         self._rest_message = self._pick_rest_message()
         _, eff_dpi, raw_dpi = self._get_target_monitor()
@@ -1427,7 +1436,48 @@ class EyeProtector:
         return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 
+def _cli(argv):
+    """命令行入口：安装版与分发脚本复用同一套逻辑。返回进程退出码。"""
+    cmd = argv[0] if argv else ""
+    if cmd in ("--version", "-V"):
+        print(__version__)
+        return 0
+    if cmd == "--install":
+        import install_service
+        return 0 if install_service.install_shortcut() else 1
+    if cmd == "--uninstall":
+        import uninstall_service
+        uninstall_service.uninstall()
+        return 0
+    if cmd == "--start":
+        import procutil
+        if procutil.is_running():
+            print("eye_protect 已在运行")
+            return 0
+        return 0 if procutil.start_background() else 1
+    if cmd == "--stop":
+        import procutil
+        pids = procutil.find_eye_protect_pids()
+        if not pids:
+            print("eye_protect 未在运行")
+            return 0
+        procutil.stop_pids(pids)
+        return 0
+    if cmd == "--restart":
+        import restart_service
+        return 0 if restart_service.restart() else 1
+    if cmd == "--upgrade":
+        import updater
+        return updater.run_upgrade(__version__)
+    print(f"未知参数: {cmd}")
+    print("用法: EyeProtect.exe [--version|--install|--uninstall|--start|--stop|--restart|--upgrade]")
+    return 2
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        sys.exit(_cli(sys.argv[1:]))
+
     protector = None
     try:
         protector = EyeProtector()

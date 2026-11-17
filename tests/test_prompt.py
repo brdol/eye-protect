@@ -330,6 +330,24 @@ def test_rest_messages_default_and_pick():
     print("  [OK] 测试18通过\n")
 
 
+def test_show_overlay_not_blocked_by_derived_state():
+    print("测试24: show_overlay 不被派生属性挡住（回归）")
+    p = new_protector()
+    p._enum_monitors = lambda: []          # 不创建真实窗口
+    p._ensure_overlay_fonts = lambda dpi: None
+    p._install_kbd_hook = lambda: None
+    p.state = STATE_RESTING
+    p.rest_blocker = BLOCKER_OVERLAY
+    p.rest_started_at = time.time()
+    try:
+        EyeProtector.show_overlay(p)       # 调用真实方法（new_protector 打过桩）
+        assert p._rest_timer is not None, "show_overlay 不应被 overlay_active 派生属性挡住"
+        print("  [OK] 进入休息时遮罩逻辑确实被执行")
+        print("  [OK] 测试24通过\n")
+    finally:
+        p._teardown_overlay()
+
+
 def test_stale_prompt_ignored_when_not_working():
     print("测试19: 非工作状态的迟到提示被忽略")
     p = new_protector()
@@ -437,6 +455,7 @@ if __name__ == "__main__":
         test_enter_rest_lock_style_locks()
         test_overlay_release_resets_state()
         test_rest_messages_default_and_pick()
+        test_show_overlay_not_blocked_by_derived_state()
         test_stale_prompt_ignored_when_not_working()
         test_lock_during_overlay_switches_blocker()
         test_unlock_after_rest_leaves_rest_cleanly()
