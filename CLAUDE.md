@@ -38,16 +38,23 @@ Tests live in `tests/` and share `tests/_bootstrap.py` — it computes the proje
 - **Install:** `python install_service.py` — creates a `.lnk` shortcut to `pythonw.exe` in the user Startup folder. Fires on login, runs `pythonw.exe` (no console window, background). **No admin needed.** After creating the shortcut it **detects whether eye_protect is already running and launches it in the background if not** (install-takes-effect-immediately).
 - **Uninstall:** `python uninstall_service.py` — deletes the shortcut (and cleans up legacy `EyeProtector.bat` / Task Scheduler task).
 - **Restart / apply config:** `python restart_service.py` — kills matching `eye_protect.py` instances and starts `pythonw.exe` in the background; if none is running, it acts as a start command.
-- **Double-clickable launchers** (for non-CLI users): `install.bat` / `uninstall.bat` / `restart.bat` at the repo root — pure-ASCII thin wrappers that call the matching `*_service.py`. They print `[DONE]` / `[FAILED] exit code N` and **pause only when launched by Explorer** (detected via `%cmdcmdline%` containing the script name), so terminal/automation runs don't block; `EYE_PROTECT_NO_PAUSE=1` forces no pause. **Keep these files pure ASCII** — Chinese comments break cmd parsing, and use the full path to `findstr.exe` so a GNU `find` on PATH can't shadow it.
+- **Double-clickable launchers** (for non-CLI users): `install.bat` / `uninstall.bat` / `restart.bat` at the repo root — pure-ASCII thin wrappers that call the matching `*_service.py`. They print `[DONE]` / `[FAILED] exit code N` and **pause only when launched by Explorer** (detected via `%cmdcmdline%` containing the script name), so terminal/automation runs don't block; `EYE_PROTECT_NO_PAUSE=1` forces no pause. **Keep these files (and `dist_scripts/*.bat`) pure ASCII** — Chinese comments break cmd parsing, and use the full path to `findstr.exe` so a GNU `find` on PATH can't shadow it.
 - **Python resolution lives in `_find_python.bat`** (shared by the three launchers; it sets `PY` in the caller's scope, so it must not `setlocal`). Order: `EYE_PROTECT_PYTHON` env var → `py -3` → **registry `PythonCore` InstallPath** (HKLM/HKCU/WOW6432Node, 3.x only; standard and conda installs register here, and it works **without PATH** — this is what fixes "works in terminal, not on double-click") → `where python` skipping `\WindowsApps\` → bare `python`. No hardcoded paths.
 - **`procutil.py` calls PowerShell by absolute path** (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`) — an Explorer-launched process may have a PATH without that directory, and a bare `powershell.exe` would silently fail the "already running" check and spawn a duplicate instance.
 - **Process plumbing lives in `procutil.py`** (`find_eye_protect_pids` / `is_running` / `start_background` / `stop_pids`), shared by `install_service.py` and `restart_service.py`. It queries via PowerShell/CIM because Windows 11 may not ship `wmic`; a diverged duplicate of this logic previously made `install_service.py` spawn a second instance every run.
 
-### Package as exe (optional)
-```bash
-pip install pyinstaller
-pyinstaller --onefile --noconsole --name=EyeProtect eye_protect.py
+### Build a release (PyInstaller onedir)
+```powershell
+pip install pywin32 pyinstaller
+powershell -ExecutionPolicy Bypass -File build_release.ps1
+# output: dist\eye-protect_<version>_windows_amd64.zip
 ```
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds on `windows-latest` and uploads the zip to the GitHub Release.
+
+### Runtime CLI (packaged exe only)
+`EyeProtect.exe --version | --install | --uninstall | --start | --stop | --restart | --upgrade`.
+With no arguments it runs the background app. In frozen mode `--start` launches the exe detached;
+`--upgrade` queries the public GitHub Release and installs it (`updater.py`).
 
 ## Architecture
 
@@ -101,6 +108,15 @@ The entire runtime lives in `eye_protect.py` as a single class, `EyeProtector`. 
 ### Auto-start installer
 - `install_service.py` — creates a `.lnk` shortcut (via pywin32 `win32com.client` → `WScript.Shell.CreateShortcut`) in `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\EyeProtect.lnk`, pointing to `pythonw.exe` + `eye_protect.py`. Runs on login, background, **no admin**. Also cleans up legacy install methods (`EyeProtector.bat`, the old Task Scheduler task).
 - `uninstall_service.py` — deletes the `.lnk` (+ legacy cleanup).
+
+### Distribution & update
+- **Packaging**: PyInstaller **onedir** built as a **console** exe. In app mode the code calls `FreeConsole()` so no console window lingers; CLI subcommands keep stdout so the `.bat` wrappers can show results.
+- **Frozen paths**: `SCRIPT_DIR` uses `dirname(sys.executable)` when `sys.frozen`; `procutil` matches `EyeProtect.exe` instead of `eye_protect.py`.
+- **`dist_scripts/*.bat`** are copied into the release zip (`install`, `upgrade`, `start`, `stop`, `restart`, `uninstall`). Pure ASCII, pause only on double-click.
+- **`install.bat`** robocopies the extracted folder to `%LOCALAPPDATA%\EyeProtect`, creates `config.json` from `config.example.json` if missing, then calls `EyeProtect.exe --install`.
+- **`updater.py`** (`--upgrade`): fetch `releases/latest` → download the zip → extract → stop other instances → write a temporary `.bat` that waits for the upgrader PID, robocopies the new files over the install dir (`/MIR`, excluding `config.json` and `logs`), then starts the new exe. A helper is required because Windows cannot overwrite a running exe / `_internal`.
+- **`procutil` excludes `os.getpid()`** from process discovery, otherwise `EyeProtect.exe --stop/--restart` would kill itself.
+- The repo is **public** (Apache-2.0), so Release assets are anonymously downloadable; the main repo is also the release repo.
 
 ## Gotchas
 

@@ -131,12 +131,47 @@ python test_integration.py    # 完整周期模拟、压力、非法配置、计
 
 > `test_edge_cases.py` 与 `test_integration.py` 会备份并改写 `config.json`，请勿与其他测试并发运行。
 
-## 打包为 exe（可选）
+## 发布版（安装包）
 
-```bash
-pip install pyinstaller
-pyinstaller --onefile --noconsole --name=EyeProtect eye_protect.py
+发布版会把 Python 运行时一起打包，使用者**不需要安装 Python**。
+
+### 安装
+
+1. 下载 `eye-protect_<version>_windows_amd64.zip` 并解压
+2. 双击 `install.bat`：
+   - 复制到 `%LOCALAPPDATA%\EyeProtect`
+   - 首次运行自动生成 `config.json`
+   - 创建开机自启动（启动文件夹快捷方式，无需管理员）
+   - 立即在后台启动
+
+### 目录结构
+
 ```
+%LOCALAPPDATA%\EyeProtect\
+    EyeProtect.exe
+    _internal\             Python 运行时与依赖
+    config.json            首次运行/安装时生成
+    logs\                  按日日志
+    install.bat / upgrade.bat / start.bat / stop.bat / restart.bat / uninstall.bat
+```
+
+### 常用操作（双击即可）
+
+| 脚本 | 作用 |
+|---|---|
+| `start.bat` / `stop.bat` / `restart.bat` | 启动 / 停止 / 重启后台进程（改完 `config.json` 用 restart） |
+| `upgrade.bat` | 检查并安装最新版本（自动下载、替换、重启，**保留 config 与 logs**） |
+| `uninstall.bat` | 移除开机自启动（程序与配置保留，可手动删目录） |
+
+### 构建发布包（维护者）
+
+```powershell
+pip install pywin32 pyinstaller
+powershell -ExecutionPolicy Bypass -File build_release.ps1
+# 产物：dist\eye-protect_<version>_windows_amd64.zip
+```
+
+推送 `v*` 标签时，GitHub Actions 会自动构建并把 zip 上传到 Release。
 
 ## 注意事项
 
@@ -145,3 +180,23 @@ pyinstaller --onefile --noconsole --name=EyeProtect eye_protect.py
 - 建议在系统区域设置开启 **"Beta: 使用 Unicode UTF-8 提供全球语言支持"**（设置 → 区域 → 管理 → 更改系统区域设置），可避免中文乱码；不开也能用，代码已用 `utf-8-sig` 读配置。
 - 后台任务以**最低权限**运行；`LockWorkStation` 无需管理员权限。
 - 锁屏/解锁事件依赖 Windows 会话通知，需在用户交互会话中运行（登录自启动已满足）。
+
+## 许可证
+
+本项目采用 **Apache License 2.0**，详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+
+```
+Copyright 2026 brd
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

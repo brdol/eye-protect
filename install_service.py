@@ -42,20 +42,28 @@ def _cleanup_old_methods(startup_folder):
         print(f"已清理旧任务计划程序任务: {TASK_NAME}")
 
 
-def install_shortcut():
+def _shortcut_target():
+    """返回（目标, 参数, 工作目录）。frozen（打包）模式下直接指向 EyeProtect.exe。"""
+    if getattr(sys, "frozen", False):
+        exe = os.path.abspath(sys.executable)
+        return exe, "", os.path.dirname(exe)
     current_dir = os.path.dirname(os.path.abspath(__file__))
     pythonw_exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    if not os.path.exists(pythonw_exe):
-        print(f"[FAIL] 未找到 pythonw.exe: {pythonw_exe}")
-        print("       pythonw.exe 是无控制台窗口的 Python，miniconda/官方安装包均自带。")
-        return False
     script_path = os.path.join(current_dir, "eye_protect.py")
+    return pythonw_exe, f'"{script_path}"', current_dir
+
+
+def install_shortcut():
+    target, args, workdir = _shortcut_target()
+    if not os.path.exists(target):
+        print(f"[FAIL] 未找到启动目标: {target}")
+        print("       源码运行时需要 pythonw.exe（miniconda/官方安装包均自带）。")
+        return False
     startup_folder = get_startup_folder()
     shortcut_path = os.path.join(startup_folder, "EyeProtect.lnk")
 
     print("正在安装护眼软件开机自启动（启动文件夹快捷方式，无需管理员，后台运行）...")
-    print(f"解释器: {pythonw_exe}")
-    print(f"脚本:   {script_path}")
+    print(f"启动目标: {target} {args}".rstrip())
     print(f"启动文件夹: {startup_folder}")
     print()
 
@@ -67,9 +75,9 @@ def install_shortcut():
 
     shell = win32com.client.Dispatch("WScript.Shell")
     shortcut = shell.CreateShortcut(shortcut_path)
-    shortcut.TargetPath = pythonw_exe
-    shortcut.Arguments = f'"{script_path}"'
-    shortcut.WorkingDirectory = current_dir
+    shortcut.TargetPath = target
+    shortcut.Arguments = args
+    shortcut.WorkingDirectory = workdir
     shortcut.WindowStyle = 7  # 最小化（pythonw 无窗口，此项无影响）
     shortcut.Description = "护眼软件 eye-protect 自启动"
     shortcut.Save()
@@ -80,7 +88,7 @@ def install_shortcut():
     print("管理:")
     print(f"  - 快捷方式位置: {shortcut_path}")
     print("  - 任务管理器 → 启动应用: 可启用/禁用 EyeProtect")
-    print("  - 停止运行: 任务管理器结束 pythonw.exe（命令行含 eye_protect.py）")
+    print("  - 停止运行: 任务管理器结束对应进程（pythonw.exe / EyeProtect.exe）")
     print("  - 卸载: python uninstall_service.py")
 
     # 安装即生效：若未在跑，后台启动一次（首次会生成 config.json）

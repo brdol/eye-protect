@@ -1478,6 +1478,13 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         sys.exit(_cli(sys.argv[1:]))
 
+    # 打包为 console 程序，主程序以无窗口方式运行时需要主动脱离控制台
+    if getattr(sys, "frozen", False):
+        try:
+            ctypes.windll.kernel32.FreeConsole()
+        except Exception:
+            pass
+
     protector = None
     try:
         protector = EyeProtector()
