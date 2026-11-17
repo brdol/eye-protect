@@ -67,6 +67,11 @@ if getattr(sys, "frozen", False):
 else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# embeddable Python（._pth 隔离模式）不会自动把脚本目录加入 sys.path，
+# 显式补上，保证同目录的 procutil / install_service 等模块可被导入。
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 # 提示文本（布局按这些文本实测宽度）
 PROMPT_TITLE = "护眼休息提醒"
 PROMPT_MESSAGE = "该休息了"
