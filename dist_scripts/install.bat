@@ -1,17 +1,11 @@
 @echo off
-REM EyeProtect - install to %LOCALAPPDATA%\EyeProtect (double-click to run)
+REM EyeProtect - install in the current folder (double-click to run)
 setlocal
-set "SRC=%~dp0"
-set "DST=%LOCALAPPDATA%\EyeProtect"
+cd /d "%~dp0"
 
-if /i "%SRC%"=="%DST%\" goto :copied
-echo Installing to %DST% ...
-"%SystemRoot%\System32\robocopy.exe" "%SRC%." "%DST%" /MIR /XD "%DST%\logs" /XF config.json >nul
-:copied
+if not exist "%~dp0config.json" if exist "%~dp0config.example.json" copy /y "%~dp0config.example.json" "%~dp0config.json" >nul
 
-if not exist "%DST%\config.json" if exist "%DST%\config.example.json" copy /y "%DST%\config.example.json" "%DST%\config.json" >nul
-
-"%DST%\EyeProtect.exe" --install
+"%~dp0EyeProtect.exe" --install
 set "RC=%ERRORLEVEL%"
 
 if not "%RC%"=="0" (echo [FAILED] exit code %RC%) else (echo [DONE])

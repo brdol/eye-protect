@@ -137,21 +137,23 @@ python test_integration.py    # 完整周期模拟、压力、非法配置、计
 
 ### 安装
 
-1. 下载 `eye-protect_<version>_windows_amd64.zip` 并解压
+1. 下载 `eye-protect_<version>_windows_amd64.zip`，**解压到一个固定目录**（例如 `D:\green\EyeProtect`）
 2. 双击 `install.bat`：
-   - 复制到 `%LOCALAPPDATA%\EyeProtect`
-   - 首次运行自动生成 `config.json`
-   - 创建开机自启动（启动文件夹快捷方式，无需管理员）
+   - 在当前位置生成 `config.json`（如缺失）
+   - 创建开机自启动（快捷方式指向当前目录的 `EyeProtect.exe`，无需管理员）
    - 立即在后台启动
+
+> 程序在解压目录原地运行，不会复制到其它位置。**安装后请勿移动该目录**；如果移动了，重新双击一次 `install.bat` 即可修复自启动路径。
 
 ### 目录结构
 
 ```
-%LOCALAPPDATA%\EyeProtect\
-    EyeProtect.exe
-    _internal\             Python 运行时与依赖
-    config.json            首次运行/安装时生成
-    logs\                  按日日志
+<解压目录>\
+    EyeProtect.exe          主程序（已内含 Python，无需安装 Python）
+    _internal\              Python 运行时与依赖
+    config.json             首次运行/安装时生成
+    logs\                   按日日志
+    README.md / LICENSE / NOTICE
     install.bat / upgrade.bat / start.bat / stop.bat / restart.bat / uninstall.bat
 ```
 
