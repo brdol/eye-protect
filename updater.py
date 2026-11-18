@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import urllib.request
 
 REPO = "brdol/eye-protect"
@@ -20,6 +21,8 @@ API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 ASSET_SUFFIX = "windows_amd64.zip"
 USER_AGENT = "EyeProtect-Updater"
 HTTP_TIMEOUT = 30
+RETRY_TRIES = 5
+RETRY_DELAY = 3
 
 APP_FILES = (
     "eye_protect.py",
@@ -56,19 +59,38 @@ def is_newer(latest, current):
     return a > b
 
 
+def _retry(fn, tries=RETRY_TRIES, delay=RETRY_DELAY):
+    """办公网络下 HTTPS 会间歇性握手失败，统一做有限次重试。"""
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if i < tries - 1:
+                time.sleep(delay)
+    raise last
+
+
 def _http_json(url):
-    req = urllib.request.Request(url, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": USER_AGENT,
-    })
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-        return json.load(r)
+    def _once():
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+        })
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            return json.load(r)
+
+    return _retry(_once)
 
 
 def _download(url, dest):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    def _once():
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+
+    _retry(_once)
 
 
 def _find_new_root(extract_dir):

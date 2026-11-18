@@ -58,7 +58,7 @@ MONITOR_DEFAULTTONEAREST = 2
 MDT_EFFECTIVE_DPI = 0
 MDT_RAW_DPI = 2
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # 脚本/程序所在目录：配置、日志、自启动都按此定位。
 # PyInstaller frozen 模式下 __file__ 指向临时解压目录，必须改用 exe 所在目录。
